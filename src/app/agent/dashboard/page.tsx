@@ -28,8 +28,7 @@ interface Profile {
   costPrice: number;
   resellerFee: number;
   sellingPrice: number;
-  downloadSpeed: number;
-  uploadSpeed: number;
+  speed: number;
   validityValue: number;
   validityUnit: string;
 }
@@ -122,7 +121,7 @@ export default function AgentDashboardPage() {
 
   const handleSendWhatsApp = async () => {
     if (selectedVouchers.length === 0) {
-      await showError('Pilih voucher terlebih dahulu');
+      await showError('Choose a voucher first');
       return
     }
     setShowWhatsAppDialog(true)
@@ -130,7 +129,7 @@ export default function AgentDashboardPage() {
 
   const handleWhatsAppSubmit = async () => {
     if (!whatsappPhone) {
-      await showError('Masukkan nomor WhatsApp');
+      await showError('Enter the WhatsApp number');
       return
     }
 
@@ -161,16 +160,16 @@ export default function AgentDashboardPage() {
       const data = await res.json()
 
       if (data.success) {
-        await showSuccess(`WhatsApp berhasil dikirim ke ${whatsappPhone}!`)
+        await showSuccess(`WhatsApp sent successfully to ${whatsappPhone}!`)
         setShowWhatsAppDialog(false)
         setWhatsappPhone('')
         setSelectedVouchers([])
       } else {
-        await showError('Gagal: ' + data.error)
+        await showError('Failed: ' + data.error)
       }
     } catch (error) {
       console.error('Send WhatsApp error:', error)
-      await showError('Gagal mengirim WhatsApp')
+      await showError('Failed to send WhatsApp')
     } finally {
       setSendingWhatsApp(false)
     }
@@ -185,7 +184,7 @@ export default function AgentDashboardPage() {
     
     const totalCost = profile.costPrice * quantity;
     const confirmed = await showConfirm(
-      `Generate ${quantity} voucher(s) ${profile.name}?\n\nTotal Harga: ${formatCurrency(totalCost)}`,
+      `Generate ${quantity} voucher(s) ${profile.name}?\n\nTotal price: ${formatCurrency(totalCost)}`,
       'Generate Voucher'
     );
     
@@ -210,13 +209,13 @@ export default function AgentDashboardPage() {
         setShowVouchersModal(true);
         // Reload dashboard to update stats
         loadDashboard(agent.id);
-        await showSuccess(`${data.vouchers.length} voucher berhasil digenerate!`);
+        await showSuccess(`${data.vouchers.length} voucher successfully generated!`);
       } else {
         await showError('Error: ' + data.error);
       }
     } catch (error) {
       console.error('Generate error:', error);
-      await showError('Gagal generate voucher');
+      await showError('Failed to generate voucher');
     } finally {
       setGenerating(false);
     }
@@ -270,7 +269,7 @@ export default function AgentDashboardPage() {
                 Dashboard Agent
               </h1>
               <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                Selamat datang, {agent.name}
+               Welcome, {agent.name}
               </p>
             </div>
             <button
@@ -308,7 +307,7 @@ export default function AgentDashboardPage() {
           <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-600 dark:text-gray-400">Total Penjualan</p>
+                <p className="text-sm text-gray-600 dark:text-gray-400">Total Sales</p>
                 <p className="text-2xl font-bold mt-1">
                   {formatCurrency(stats.allTime.total)}
                 </p>
@@ -323,9 +322,9 @@ export default function AgentDashboardPage() {
           <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-gray-600 dark:text-gray-400">Voucher Tersedia</p>
+                <p className="text-sm text-gray-600 dark:text-gray-400">Vouchers Available</p>
                 <p className="text-2xl font-bold mt-1">{stats.waiting}</p>
-                <p className="text-xs text-gray-500 mt-1">dari {stats.generated} total</p>
+                <p className="text-xs text-gray-500 mt-1"> {stats.generated} total</p>
               </div>
               <Ticket className="h-8 w-8 text-purple-600" />
             </div>
@@ -341,7 +340,7 @@ export default function AgentDashboardPage() {
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="md:col-span-2">
-              <label className="block text-sm font-medium mb-2">Pilih Paket</label>
+              <label className="block text-sm font-medium mb-2">Select Package</label>
               <select
                 value={selectedProfile}
                 onChange={(e) => setSelectedProfile(e.target.value)}
@@ -349,14 +348,14 @@ export default function AgentDashboardPage() {
               >
                 {profiles.map((profile) => (
                   <option key={profile.id} value={profile.id}>
-                    {profile.name} - {formatCurrency(profile.sellingPrice)} - {profile.downloadSpeed}/{profile.uploadSpeed} Mbps
+                    {profile.name} - {formatCurrency(profile.sellingPrice)} - {profile.speed} Mbps
                   </option>
                 ))}
               </select>
             </div>
 
             <div>
-              <label className="block text-sm font-medium mb-2">Jumlah</label>
+              <label className="block text-sm font-medium mb-2">Amount</label>
               <input
                 type="number"
                 min="1"
@@ -372,23 +371,23 @@ export default function AgentDashboardPage() {
             <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                 <div>
-                  <p className="text-gray-600 dark:text-gray-400">Harga Beli</p>
+                  <p className="text-gray-600 dark:text-gray-400">Purchase Price</p>
                   <p className="font-semibold">
                     {formatCurrency(selectedProfileData.costPrice)}
                   </p>
                 </div>
                 <div>
-                  <p className="text-gray-600 dark:text-gray-400">Keuntungan/pcs</p>
+                  <p className="text-gray-600 dark:text-gray-400">Profit/pcs</p>
                   <p className="font-semibold text-green-600">
                     {formatCurrency(selectedProfileData.resellerFee)}
                   </p>
                 </div>
                 <div>
                   <p className="text-gray-600 dark:text-gray-400">Speed</p>
-                  <p className="font-semibold">{selectedProfileData.downloadSpeed}/{selectedProfileData.uploadSpeed} Mbps</p>
+                  <p className="font-semibold">{selectedProfileData.speed} Mbps</p>
                 </div>
                 <div>
-                  <p className="text-gray-600 dark:text-gray-400">Total Bayar</p>
+                  <p className="text-gray-600 dark:text-gray-400">Total Pay</p>
                   <p className="font-semibold text-blue-600">
                     {formatCurrency(selectedProfileData.costPrice * quantity)}
                   </p>
@@ -423,8 +422,8 @@ export default function AgentDashboardPage() {
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden">
           <div className="px-6 py-4 border-b dark:border-gray-700 flex items-center justify-between">
             <div>
-              <h2 className="text-lg font-semibold">Voucher Saya</h2>
-              <p className="text-sm text-gray-500">Semua voucher yang sudah di-generate</p>
+              <h2 className="text-lg font-semibold">My Voucher</h2>
+              <p className="text-sm text-gray-500">All vouchers that have been generated</p>
             </div>
             {selectedVouchers.length > 0 && (
               <button
@@ -432,7 +431,7 @@ export default function AgentDashboardPage() {
                 className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm transition"
               >
                 <MessageCircle className="h-4 w-4" />
-                Kirim WA ({selectedVouchers.length})
+                Send WA ({selectedVouchers.length})
               </button>
             )}
           </div>
@@ -448,20 +447,20 @@ export default function AgentDashboardPage() {
                       className="rounded border-gray-300"
                     />
                   </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Kode Voucher</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Voucher Code</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Batch</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Paket</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Package</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">First Login</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Expires At</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Dibuat</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Made</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
                 {vouchers.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="px-6 py-12 text-center text-gray-500">
-                      Belum ada voucher. Generate voucher pertama Anda di atas.
+                    No vouchers yet. Generate your first voucher above.
                     </td>
                   </tr>
                 ) : (
@@ -522,7 +521,7 @@ export default function AgentDashboardPage() {
             <div className="px-6 py-4 border-b dark:border-gray-700 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Check className="h-6 w-6 text-green-600" />
-                <h2 className="text-xl font-semibold">Voucher Berhasil Dibuat!</h2>
+                <h2 className="text-xl font-semibold">Voucher Successfully Created!</h2>
               </div>
               <button
                 onClick={() => {
@@ -537,7 +536,7 @@ export default function AgentDashboardPage() {
 
             <div className="p-6 overflow-y-auto max-h-[calc(90vh-120px)]">
               <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-                Salin kode voucher di bawah ini untuk pelanggan Anda
+              Copy the voucher code below for your customers
               </p>
               <div className="space-y-2">
                 {generatedVouchers.map((voucher, index) => (
@@ -571,23 +570,23 @@ export default function AgentDashboardPage() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
           <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full">
             <div className="px-6 py-4 border-b dark:border-gray-700">
-              <h2 className="text-xl font-semibold">Kirim Voucher via WhatsApp</h2>
+              <h2 className="text-xl font-semibold">Send Vouchers via WhatsApp</h2>
               <p className="text-sm text-gray-500 mt-1">
-                Kirim {selectedVouchers.length} voucher ke customer
+              Send {selectedVouchers.length} vouchers to customers
               </p>
             </div>
 
             <div className="p-6">
-              <label className="block text-sm font-medium mb-2">Nomor WhatsApp</label>
+              <label className="block text-sm font-medium mb-2">WhatsApp Number</label>
               <input
                 type="tel"
-                placeholder="628123456789"
+                placeholder="628567890"
                 value={whatsappPhone}
                 onChange={(e) => setWhatsappPhone(e.target.value)}
                 className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg dark:bg-gray-700"
               />
               <p className="text-xs text-gray-500 mt-1">
-                Masukkan nomor dengan kode negara (contoh: 628123456789)
+               Enter the number with the country code (example: 628567890)
               </p>
             </div>
 
@@ -599,7 +598,7 @@ export default function AgentDashboardPage() {
                 }}
                 className="px-4 py-2 text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition"
               >
-                Batal
+                Cancelled
               </button>
               <button
                 onClick={handleWhatsAppSubmit}
@@ -612,12 +611,12 @@ export default function AgentDashboardPage() {
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                     </svg>
-                    Mengirim...
+                    Send...
                   </>
                 ) : (
                   <>
                     <MessageCircle className="h-4 w-4" />
-                    Kirim WhatsApp
+                    Send WhatsApp
                   </>
                 )}
               </button>

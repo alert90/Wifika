@@ -3,39 +3,33 @@ import { promisify } from 'util';
 
 const execAsync = promisify(exec);
 
-// Track last restart time to prevent concurrent restarts
 let lastRestartTime = 0;
 const RESTART_COOLDOWN = 3000; // 3 seconds cooldown
 
 /**
- * Restart FreeRADIUS service
- * Requires sudoers permission for PM2 user
+ * Reloads FreeRADIUS daemon configuration smoothly.
  */
 export async function reloadFreeRadius(): Promise<void> {
   const now = Date.now();
-  
-  // Prevent concurrent restarts
+
   if (now - lastRestartTime < RESTART_COOLDOWN) {
-    console.log('FreeRADIUS restart skipped (cooldown active)');
+    console.log('FreeRADIUS reload skipped (cooldown active)');
     return;
   }
 
   try {
     lastRestartTime = now;
-    
-    // Restart FreeRADIUS service via sudo
-    const { stdout, stderr } = await execAsync('sudo systemctl restart freeradius', {
-      timeout: 10000, // 10 second timeout
+
+    const { stderr } = await execAsync('sudo systemctl reload freeradius', {
+      timeout: 10000
     });
 
     if (stderr) {
-      console.error('FreeRADIUS restart stderr:', stderr);
+      console.warn('FreeRADIUS reload warning:', stderr);
     }
 
-    console.log('FreeRADIUS restarted successfully');
+    console.log('FreeRADIUS reloaded successfully');
   } catch (error: any) {
-    console.error('Failed to restart FreeRADIUS:', error.message);
-    // Don't throw error - NAS update is more important
-    // FreeRADIUS can be restarted manually if needed
+    console.error('Failed to reload FreeRADIUS:', error.message);
   }
 }
