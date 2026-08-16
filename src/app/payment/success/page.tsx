@@ -36,7 +36,7 @@ function PaymentSuccessContent() {
     if (token) {
       fetchInvoiceStatus();
     } else {
-      setError('Token pembayaran tidak ditemukan');
+      setError('Payment token not found');
       setLoading(false);
     }
   }, [token]);
@@ -49,11 +49,11 @@ function PaymentSuccessContent() {
       if (res.ok && data.invoice) {
         setInvoice(data.invoice);
       } else {
-        setError(data.error || 'Invoice tidak ditemukan');
+        setError(data.error || 'Invoice not found');
       }
     } catch (err) {
       console.error('Fetch error:', err);
-      setError('Gagal mengecek status pembayaran');
+      setError('Failed to check payment status');
     } finally {
       setLoading(false);
     }
@@ -64,7 +64,7 @@ function PaymentSuccessContent() {
       <div className="min-h-screen bg-gradient-to-br from-green-50 via-emerald-50 to-teal-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 flex items-center justify-center p-4">
         <div className="text-center">
           <Loader2 className="w-12 h-12 animate-spin text-green-600 mx-auto mb-4" />
-          <p className="text-gray-600 dark:text-gray-400">Mengecek status pembayaran...</p>
+          <p className="text-gray-600 dark:text-gray-400">Checking payment status...</p>
         </div>
       </div>
     );
@@ -87,7 +87,7 @@ function PaymentSuccessContent() {
             onClick={() => router.push('/')}
             className="px-6 py-3 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white rounded-lg transition-all transform hover:scale-105"
           >
-            Kembali ke Beranda
+            Back to Home
           </button>
         </div>
       </div>
@@ -112,11 +112,11 @@ function PaymentSuccessContent() {
           </div>
           
           <h1 className="text-4xl font-bold bg-gradient-to-r from-green-600 to-emerald-600 dark:from-green-400 dark:to-emerald-400 bg-clip-text text-transparent mt-6 mb-2 animate-slide-up">
-            Pembayaran Berhasil! 🎉
+            Payment Successful! 🎉
           </h1>
           
           <p className="text-gray-600 dark:text-gray-400 text-lg animate-slide-up animation-delay-100">
-            {isPaid ? 'Invoice Anda telah terbayar' : 'Pembayaran sedang diproses'}
+            {isPaid ? 'Your invoice has been paid' : 'Payment is being processed'}
           </p>
         </div>
 
@@ -128,7 +128,7 @@ function PaymentSuccessContent() {
               <span className="text-sm opacity-90">Invoice</span>
               {isPaid && (
                 <span className="px-3 py-1 bg-white/20 backdrop-blur-sm rounded-full text-xs font-semibold">
-                  LUNAS
+                  PAID
                 </span>
               )}
             </div>
@@ -139,7 +139,7 @@ function PaymentSuccessContent() {
           <div className="p-6 space-y-6">
             {/* Amount */}
             <div className="text-center py-6 bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-800 rounded-xl">
-              <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">Total Pembayaran</p>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">Total Payment</p>
               <p className="text-4xl font-bold bg-gradient-to-r from-green-600 to-emerald-600 dark:from-green-400 dark:to-emerald-400 bg-clip-text text-transparent">
                 {formatCurrency(invoice.amount)}
               </p>
@@ -150,7 +150,7 @@ function PaymentSuccessContent() {
               <div className="flex items-start gap-3">
                 <User className="w-5 h-5 text-gray-400 mt-0.5" />
                 <div className="flex-1">
-                  <p className="text-sm text-gray-500 dark:text-gray-400">Pelanggan</p>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">Customer</p>
                   <p className="font-semibold text-gray-900 dark:text-white">{customerName}</p>
                   <p className="text-sm text-gray-600 dark:text-gray-400">{customerPhone}</p>
                 </div>
@@ -160,9 +160,9 @@ function PaymentSuccessContent() {
                 <div className="flex items-start gap-3">
                   <CreditCard className="w-5 h-5 text-gray-400 mt-0.5" />
                   <div className="flex-1">
-                    <p className="text-sm text-gray-500 dark:text-gray-400">Tanggal Pembayaran</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">Payment Date</p>
                     <p className="font-semibold text-gray-900 dark:text-white">
-                      {new Date(invoice.paidAt).toLocaleDateString('id-ID', {
+                      {new Date(invoice.paidAt).toLocaleDateString('en-TZ', {
                         day: 'numeric',
                         month: 'long',
                         year: 'numeric',
@@ -178,9 +178,9 @@ function PaymentSuccessContent() {
                 <div className="flex items-start gap-3">
                   <Calendar className="w-5 h-5 text-gray-400 mt-0.5" />
                   <div className="flex-1">
-                    <p className="text-sm text-gray-500 dark:text-gray-400">Masa Aktif Sampai</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">Active Until</p>
                     <p className="font-semibold text-green-600 dark:text-green-400">
-                      {new Date(expiryDate).toLocaleDateString('id-ID', {
+                      {new Date(expiryDate).toLocaleDateString('en-TZ', {
                         day: 'numeric',
                         month: 'long',
                         year: 'numeric'
@@ -195,7 +195,7 @@ function PaymentSuccessContent() {
             {isPaid && (
               <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl p-4">
                 <p className="text-sm text-green-800 dark:text-green-300 text-center">
-                  ✅ Layanan Anda telah diaktifkan kembali
+                  ✅ Your service has been reactivated
                 </p>
               </div>
             )}
@@ -209,21 +209,21 @@ function PaymentSuccessContent() {
             className="flex-1 flex items-center justify-center gap-2 px-6 py-4 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-xl border-2 border-gray-200 dark:border-gray-700 hover:border-green-500 dark:hover:border-green-500 transition-all transform hover:scale-105"
           >
             <Download className="w-5 h-5" />
-            <span className="font-semibold">Lihat Invoice</span>
+            <span className="font-semibold">View Invoice</span>
           </button>
           
           <button
             onClick={() => router.push('/')}
             className="flex-1 flex items-center justify-center gap-2 px-6 py-4 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white rounded-xl shadow-lg shadow-green-500/30 transition-all transform hover:scale-105"
           >
-            <span className="font-semibold">Selesai</span>
+            <span className="font-semibold">Done</span>
             <ArrowRight className="w-5 h-5" />
           </button>
         </div>
 
         {/* Footer */}
         <div className="text-center mt-8 text-sm text-gray-500 dark:text-gray-400 animate-fade-in animation-delay-400">
-          <p>Terima kasih atas pembayaran Anda! 🙏</p>
+          <p>Thank you for your payment! 🙏</p>
         </div>
       </div>
 

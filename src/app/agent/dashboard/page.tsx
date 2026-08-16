@@ -1,8 +1,6 @@
 'use client';
-import { showSuccess, showError, showConfirm, showToast } from '@/lib/sweetalert';
-import { formatNairobi } from '@/lib/timezone';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   TrendingUp,
@@ -14,6 +12,8 @@ import {
   X as CloseIcon,
   MessageCircle,
 } from 'lucide-react';
+import { showSuccess, showError, showConfirm } from '@/lib/sweetalert';
+import { formatNairobi } from '@/lib/timezone';
 
 interface AgentData {
   id: string;
@@ -44,6 +44,12 @@ interface Voucher {
   createdAt: string;
 }
 
+interface GeneratedVoucher {
+  id: string;
+  code: string;
+  batchCode?: string;
+}
+
 export default function AgentDashboardPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
@@ -59,29 +65,16 @@ export default function AgentDashboardPage() {
   const [generating, setGenerating] = useState(false);
   const [selectedProfile, setSelectedProfile] = useState<string>('');
   const [quantity, setQuantity] = useState(1);
-  const [generatedVouchers, setGeneratedVouchers] = useState<any[]>([]);
+  const [generatedVouchers, setGeneratedVouchers] = useState<GeneratedVoucher[]>([]);
   const [showVouchersModal, setShowVouchersModal] = useState(false);
-  
+
   // WhatsApp functionality
   const [selectedVouchers, setSelectedVouchers] = useState<string[]>([]);
   const [showWhatsAppDialog, setShowWhatsAppDialog] = useState(false);
   const [whatsappPhone, setWhatsappPhone] = useState('');
   const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
 
-  useEffect(() => {
-    // Check if agent is logged in
-    const agentDataStr = localStorage.getItem('agentData');
-    if (!agentDataStr) {
-      router.push('/agent');
-      return;
-    }
-
-    const agentData = JSON.parse(agentDataStr);
-    setAgent(agentData);
-    loadDashboard(agentData.id);
-  }, [router]);
-
-  const loadDashboard = async (agentId: string) => {
+  const loadDashboard = useCallback(async (agentId: string) => {
     try {
       const res = await fetch(`/api/agent/dashboard?agentId=${agentId}`);
       const data = await res.json();
@@ -91,7 +84,7 @@ export default function AgentDashboardPage() {
         setProfiles(data.profiles);
         setVouchers(data.vouchers || []);
         if (data.profiles.length > 0) {
-          setSelectedProfile(data.profiles[0].id);
+          setSelectedProfile((prev) => prev || data.profiles[0].id);
         }
       }
     } catch (error) {
@@ -99,7 +92,24 @@ export default function AgentDashboardPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    const agentDataStr = localStorage.getItem('agentData');
+    if (!agentDataStr) {
+      router.push('/agent');
+      return;
+    }
+
+    try {
+      const agentData = JSON.parse(agentDataStr) as AgentData;
+      setAgent(agentData);
+      loadDashboard(agentData.id);
+    } catch (e) {
+      console.error('Error parsing agent data:', e);
+      router.push('/agent');
+    }
+  }, [router, loadDashboard]);
 
   const handleLogout = () => {
     localStorage.removeItem('agentData');
@@ -107,87 +117,95 @@ export default function AgentDashboardPage() {
   };
 
   const handleSelectVoucher = (voucherId: string) => {
-    setSelectedVouchers(prev => 
-      prev.includes(voucherId) 
-        ? prev.filter(id => id !== voucherId)
+    setSelectedVouchers((prev) =>
+      prev.includes(voucherId)
+        ? prev.filter((id) => id !== voucherId)
         : [...prev, voucherId]
-    )
-  }
+    );
+  };
 
   const handleSelectAll = () => {
-    const waitingVouchers = vouchers.filter(v => v.status === 'WAITING').map(v => v.id)
-    setSelectedVouchers(waitingVouchers.length === selectedVouchers.length ? [] : waitingVouchers)
-  }
+    const waitingVouchers = vouchers
+      .filter((v) => v.status === 'WAITING')
+      .map((v) => v.id);
+    setSelectedVouchers(
+      waitingVouchers.length === selectedVouchers.length ? [] : waitingVouchers
+    );
+  };
 
   const handleSendWhatsApp = async () => {
     if (selectedVouchers.length === 0) {
       await showError('Choose a voucher first');
-      return
+      return;
     }
-    setShowWhatsAppDialog(true)
-  }
+    setShowWhatsAppDialog(true);
+  };
 
   const handleWhatsAppSubmit = async () => {
     if (!whatsappPhone) {
       await showError('Enter the WhatsApp number');
-      return
+      return;
     }
 
-    setSendingWhatsApp(true)
+    setSendingWhatsApp(true);
     try {
-      const vouchersToSend = vouchers.filter(v => selectedVouchers.includes(v.id))
-      
-      // Get profile info for each voucher
-      const vouchersData = vouchersToSend.map(v => {
-        const profile = profiles.find(p => p.name === v.profileName)
+      const vouchersToSend = vouchers.filter((v) =>
+        selectedVouchers.includes(v.id)
+      );
+
+      const vouchersData = vouchersToSend.map((v) => {
+        const profile = profiles.find((p) => p.name === v.profileName);
         return {
           code: v.code,
           profileName: v.profileName,
           price: profile?.sellingPrice || 0,
-          validity: profile ? `${profile.validityValue} ${profile.validityUnit.toLowerCase()}` : '-'
-        }
-      })
+          validity: profile
+            ? `${profile.validityValue} ${profile.validityUnit.toLowerCase()}`
+            : '-',
+        };
+      });
 
       const res = await fetch('/api/hotspot/voucher/send-whatsapp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           phone: whatsappPhone,
-          vouchers: vouchersData
-        })
-      })
+          vouchers: vouchersData,
+        }),
+      });
 
-      const data = await res.json()
+      const data = await res.json();
 
       if (data.success) {
-        await showSuccess(`WhatsApp sent successfully to ${whatsappPhone}!`)
-        setShowWhatsAppDialog(false)
-        setWhatsappPhone('')
-        setSelectedVouchers([])
+        await showSuccess(`WhatsApp sent successfully to ${whatsappPhone}!`);
+        setShowWhatsAppDialog(false);
+        setWhatsappPhone('');
+        setSelectedVouchers([]);
       } else {
-        await showError('Failed: ' + data.error)
+        await showError('Failed: ' + data.error);
       }
     } catch (error) {
-      console.error('Send WhatsApp error:', error)
-      await showError('Failed to send WhatsApp')
+      console.error('Send WhatsApp error:', error);
+      await showError('Failed to send WhatsApp');
     } finally {
-      setSendingWhatsApp(false)
+      setSendingWhatsApp(false);
     }
-  }
+  };
 
   const handleGenerate = async () => {
     if (!agent || !selectedProfile) return;
-    
-    // Confirmation
-    const profile = profiles.find(p => p.id === selectedProfile);
+
+    const profile = profiles.find((p) => p.id === selectedProfile);
     if (!profile) return;
-    
+
     const totalCost = profile.costPrice * quantity;
     const confirmed = await showConfirm(
-      `Generate ${quantity} voucher(s) ${profile.name}?\n\nTotal price: ${formatCurrency(totalCost)}`,
+      `Generate ${quantity} voucher(s) ${profile.name}?\n\nTotal price: ${formatCurrency(
+        totalCost
+      )}`,
       'Generate Voucher'
     );
-    
+
     if (!confirmed) return;
 
     setGenerating(true);
@@ -207,9 +225,8 @@ export default function AgentDashboardPage() {
       if (res.ok) {
         setGeneratedVouchers(data.vouchers);
         setShowVouchersModal(true);
-        // Reload dashboard to update stats
         loadDashboard(agent.id);
-        await showSuccess(`${data.vouchers.length} voucher successfully generated!`);
+        await showSuccess(`${data.vouchers.length} voucher(s) successfully generated!`);
       } else {
         await showError('Error: ' + data.error);
       }
@@ -222,29 +239,19 @@ export default function AgentDashboardPage() {
   };
 
   const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat('id-ID', {
+    return new Intl.NumberFormat('en-TZ', {
       style: 'currency',
       currency: 'TZS',
       minimumFractionDigits: 0,
     }).format(amount);
   };
 
-  const formatValidity = (value: number, unit: string) => {
-    const unitMap: Record<string, string> = {
-      MINUTES: value === 1 ? 'Minute' : 'Minutes',
-      HOURS: value === 1 ? 'Hour' : 'Hours',
-      DAYS: value === 1 ? 'Day' : 'Days',
-      MONTHS: value === 1 ? 'Month' : 'Months',
-    };
-    return `${value} ${unitMap[unit] || unit}`;
-  };
-
-  const currentMonthName = new Date().toLocaleDateString('id-ID', {
+  const currentMonthName = new Date().toLocaleDateString('en-TZ', {
     month: 'long',
     year: 'numeric',
   });
 
-  const selectedProfileData = profiles.find(p => p.id === selectedProfile);
+  const selectedProfileData = profiles.find((p) => p.id === selectedProfile);
 
   if (loading) {
     return (
@@ -266,10 +273,10 @@ export default function AgentDashboardPage() {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-                Dashboard Agent
+                Agent Dashboard
               </h1>
               <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-               Welcome, {agent.name}
+                Welcome, {agent.name}
               </p>
             </div>
             <button
@@ -324,7 +331,7 @@ export default function AgentDashboardPage() {
               <div>
                 <p className="text-sm text-gray-600 dark:text-gray-400">Vouchers Available</p>
                 <p className="text-2xl font-bold mt-1">{stats.waiting}</p>
-                <p className="text-xs text-gray-500 mt-1"> {stats.generated} total</p>
+                <p className="text-xs text-gray-500 mt-1">{stats.generated} total</p>
               </div>
               <Ticket className="h-8 w-8 text-purple-600" />
             </div>
@@ -361,7 +368,7 @@ export default function AgentDashboardPage() {
                 min="1"
                 max="50"
                 value={quantity}
-                onChange={(e) => setQuantity(parseInt(e.target.value) || 1)}
+                onChange={(e) => setQuantity(parseInt(e.target.value, 10) || 1)}
                 className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg dark:bg-gray-700"
               />
             </div>
@@ -422,7 +429,7 @@ export default function AgentDashboardPage() {
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden">
           <div className="px-6 py-4 border-b dark:border-gray-700 flex items-center justify-between">
             <div>
-              <h2 className="text-lg font-semibold">My Voucher</h2>
+              <h2 className="text-lg font-semibold">My Vouchers</h2>
               <p className="text-sm text-gray-500">All vouchers that have been generated</p>
             </div>
             {selectedVouchers.length > 0 && (
@@ -442,7 +449,11 @@ export default function AgentDashboardPage() {
                   <th className="px-6 py-3 w-12">
                     <input
                       type="checkbox"
-                      checked={selectedVouchers.length > 0 && selectedVouchers.length === vouchers.filter(v => v.status === 'WAITING').length}
+                      checked={
+                        selectedVouchers.length > 0 &&
+                        selectedVouchers.length ===
+                          vouchers.filter((v) => v.status === 'WAITING').length
+                      }
                       onChange={handleSelectAll}
                       className="rounded border-gray-300"
                     />
@@ -453,14 +464,14 @@ export default function AgentDashboardPage() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">First Login</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Expires At</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Made</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Created</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
                 {vouchers.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="px-6 py-12 text-center text-gray-500">
-                    No vouchers yet. Generate your first voucher above.
+                      No vouchers yet. Generate your first voucher above.
                     </td>
                   </tr>
                 ) : (
@@ -480,27 +491,27 @@ export default function AgentDashboardPage() {
                       <td className="px-6 py-4 text-sm text-gray-500">{voucher.batchCode}</td>
                       <td className="px-6 py-4 text-sm">{voucher.profileName}</td>
                       <td className="px-6 py-4">
-                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                          voucher.status === 'ACTIVE'
-                            ? 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400'
-                            : voucher.status === 'EXPIRED'
-                            ? 'bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-400'
-                            : 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-400'
-                        }`}>
+                        <span
+                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                            voucher.status === 'ACTIVE'
+                              ? 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400'
+                              : voucher.status === 'EXPIRED'
+                              ? 'bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-400'
+                              : 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-400'
+                          }`}
+                        >
                           {voucher.status}
                         </span>
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-500">
-                        {voucher.firstLoginAt 
+                        {voucher.firstLoginAt
                           ? formatNairobi(new Date(voucher.firstLoginAt), 'dd/MM/yyyy HH:mm')
-                          : '-'
-                        }
+                          : '-'}
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-500">
-                        {voucher.expiresAt 
+                        {voucher.expiresAt
                           ? formatNairobi(new Date(voucher.expiresAt), 'dd/MM/yyyy HH:mm')
-                          : '-'
-                        }
+                          : '-'}
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-500">
                         {formatNairobi(new Date(voucher.createdAt), 'dd MMM yyyy HH:mm')}
@@ -536,7 +547,7 @@ export default function AgentDashboardPage() {
 
             <div className="p-6 overflow-y-auto max-h-[calc(90vh-120px)]">
               <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-              Copy the voucher code below for your customers
+                Copy the voucher code below for your customers:
               </p>
               <div className="space-y-2">
                 {generatedVouchers.map((voucher, index) => (
@@ -549,9 +560,9 @@ export default function AgentDashboardPage() {
                       <p className="text-2xl font-mono font-bold">{voucher.code}</p>
                     </div>
                     <button
-                      onClick={() => {
-                        navigator.clipboard.writeText(voucher.code);
-                        alert('Kode disalin!');
+                      onClick={async () => {
+                        await navigator.clipboard.writeText(voucher.code);
+                        await showSuccess('Voucher code copied to clipboard!');
                       }}
                       className="px-3 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded transition"
                     >
@@ -572,7 +583,7 @@ export default function AgentDashboardPage() {
             <div className="px-6 py-4 border-b dark:border-gray-700">
               <h2 className="text-xl font-semibold">Send Vouchers via WhatsApp</h2>
               <p className="text-sm text-gray-500 mt-1">
-              Send {selectedVouchers.length} vouchers to customers
+                Send {selectedVouchers.length} voucher(s) to customer
               </p>
             </div>
 
@@ -580,25 +591,25 @@ export default function AgentDashboardPage() {
               <label className="block text-sm font-medium mb-2">WhatsApp Number</label>
               <input
                 type="tel"
-                placeholder="628567890"
+                placeholder="255712345678"
                 value={whatsappPhone}
                 onChange={(e) => setWhatsappPhone(e.target.value)}
                 className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg dark:bg-gray-700"
               />
               <p className="text-xs text-gray-500 mt-1">
-               Enter the number with the country code (example: 628567890)
+                Enter the number with country code without + sign (e.g., 255712345678)
               </p>
             </div>
 
             <div className="px-6 py-4 border-t dark:border-gray-700 flex gap-2 justify-end">
               <button
                 onClick={() => {
-                  setShowWhatsAppDialog(false)
-                  setWhatsappPhone('')
+                  setShowWhatsAppDialog(false);
+                  setWhatsappPhone('');
                 }}
                 className="px-4 py-2 text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition"
               >
-                Cancelled
+                Cancel
               </button>
               <button
                 onClick={handleWhatsAppSubmit}
@@ -611,7 +622,7 @@ export default function AgentDashboardPage() {
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                     </svg>
-                    Send...
+                    Sending...
                   </>
                 ) : (
                   <>

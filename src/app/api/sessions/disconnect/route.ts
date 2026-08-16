@@ -2,10 +2,17 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { sendCoADisconnect } from '@/lib/services/coaService';
 
+interface DisconnectResult {
+  sessionId?: string;
+  username?: string;
+  success: boolean;
+  error?: string;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { sessionIds, usernames } = body; // Support both session IDs or usernames
+    const { sessionIds, usernames } = body;
 
     if (!sessionIds && !usernames) {
       return NextResponse.json(
@@ -14,17 +21,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    let results: any[] = [];
+    const results: DisconnectResult[] = [];
 
-    // If sessionIds provided, disconnect by session IDs
+    // 1. Disconnect by session IDs (acctsessionid in radacct)
     if (sessionIds && Array.isArray(sessionIds)) {
       for (const sessionId of sessionIds) {
         try {
-          // Find session in radacct
           const session = await prisma.radacct.findFirst({
             where: {
               acctsessionid: sessionId,
-              acctstoptime: null, // Only active sessions
+              acctstoptime: null,
             },
           });
 
@@ -37,7 +43,6 @@ export async function POST(request: NextRequest) {
             continue;
           }
 
-          // Get NAS configuration
           const router = await prisma.router.findFirst({
             where: { nasname: session.nasipaddress },
           });
@@ -51,7 +56,6 @@ export async function POST(request: NextRequest) {
             continue;
           }
 
-          // Send COA disconnect
           const result = await sendCoADisconnect(
             session.username,
             session.nasipaddress,
@@ -60,26 +64,36 @@ export async function POST(request: NextRequest) {
             session.framedipaddress
           );
 
+          if (result.success) {
+            await prisma.radacct.updateMany({
+              where: { acctsessionid: sessionId, acctstoptime: null },
+              data: {
+                acctstoptime: new Date(),
+                acctterminatecause: 'Admin-Reset',
+              },
+            });
+          }
+
           results.push({
             sessionId,
             username: session.username,
             ...result,
           });
-        } catch (error: any) {
+        } catch (error: unknown) {
+          const errMessage = error instanceof Error ? error.message : 'Unknown error';
           results.push({
             sessionId,
             success: false,
-            error: error.message,
+            error: errMessage,
           });
         }
       }
     }
 
-    // If usernames provided, disconnect by username
+    // 2. Disconnect by username
     if (usernames && Array.isArray(usernames)) {
       for (const username of usernames) {
         try {
-          // Find active session for username
           const session = await prisma.radacct.findFirst({
             where: {
               username,
@@ -99,7 +113,6 @@ export async function POST(request: NextRequest) {
             continue;
           }
 
-          // Get NAS configuration
           const router = await prisma.router.findFirst({
             where: { nasname: session.nasipaddress },
           });
@@ -113,7 +126,6 @@ export async function POST(request: NextRequest) {
             continue;
           }
 
-          // Send COA disconnect
           const result = await sendCoADisconnect(
             session.username,
             session.nasipaddress,
@@ -122,22 +134,32 @@ export async function POST(request: NextRequest) {
             session.framedipaddress
           );
 
+          if (result.success) {
+            await prisma.radacct.updateMany({
+              where: { username, acctstoptime: null },
+              data: {
+                acctstoptime: new Date(),
+                acctterminatecause: 'Admin-Reset',
+              },
+            });
+          }
+
           results.push({
             username,
             sessionId: session.acctsessionid,
             ...result,
           });
-        } catch (error: any) {
+        } catch (error: unknown) {
+          const errMessage = error instanceof Error ? error.message : 'Unknown error';
           results.push({
             username,
             success: false,
-            error: error.message,
+            error: errMessage,
           });
         }
       }
     }
 
-    // Calculate summary
     const successful = results.filter(r => r.success).length;
     const failed = results.filter(r => !r.success).length;
 

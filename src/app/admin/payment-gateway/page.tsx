@@ -133,6 +133,12 @@ export default function PaymentGatewayPage() {
     isActive: false
   });
 
+  const [anypayForm, setAnypayForm] = useState({
+    apiKey: '',
+    environment: 'sandbox',
+    isActive: false
+  });
+
   useEffect(() => {
     fetchConfigs();
     fetchWebhookLogs();
@@ -211,6 +217,15 @@ export default function PaymentGatewayPage() {
           secretKey: pesapal.pesapalSecretKey || '',
           environment: pesapal.pesapalEnvironment || 'sandbox',
           isActive: pesapal.isActive
+        });
+      }
+
+      const anypay = data.find((c: PaymentGateway) => c.provider === 'anypay');
+      if (anypay) {
+        setAnypayForm({
+          apiKey: anypay.anypayApiKey || '',
+          environment: anypay.anypayEnvironment || 'sandbox',
+          isActive: anypay.isActive
         });
       }
     } catch (error) {
@@ -405,6 +420,34 @@ export default function PaymentGatewayPage() {
     }
   };
 
+  const saveAnypay = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch('/api/payment-gateway/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: 'anypay',
+          anypayApiKey: anypayForm.apiKey,
+          anypayEnvironment: anypayForm.environment,
+          isActive: anypayForm.isActive
+        })
+      });
+      if (res.ok) {
+        await showSuccess('AnyPay configuration saved successfully');
+        fetchConfigs();
+      } else {
+        const data = await res.json();
+        await showError(data.error || 'Failed to save AnyPay config');
+      }
+    } catch (error) {
+      console.error('Save AnyPay error:', error);
+      await showError('Failed to save AnyPay configuration');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const toggleSecret = (key: string) => {
     setShowSecrets(prev => ({ ...prev, [key]: !prev[key] }));
   };
@@ -558,6 +601,11 @@ export default function PaymentGatewayPage() {
             <Wallet className="h-4 w-4" />
             Pesapal
             {configs.find(c => c.provider === 'pesapal')?.isActive && <CheckCircle2 className="h-3 w-3 text-green-600" />}
+          </TabsTrigger>
+          <TabsTrigger value="anypay" className="flex items-center gap-2">
+            <Wallet className="h-4 w-4" />
+            AnyPay
+            {configs.find(c => c.provider === 'anypay')?.isActive && <CheckCircle2 className="h-3 w-3 text-green-600" />}
           </TabsTrigger>
         </TabsList>
 
@@ -1319,6 +1367,82 @@ export default function PaymentGatewayPage() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        <TabsContent value="anypay">
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>AnyPay Configuration</CardTitle>
+                <CardDescription>Configure your AnyPay payment gateway</CardDescription>
+              </div>
+              {configs.find(c => c.provider === 'anypay')?.isActive && (
+                <Badge className="bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400">Active</Badge>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            {/* Environment */}
+            <div className="space-y-2">
+              <Label>Environment</Label>
+              <select
+                value={anypayForm.environment}
+                onChange={(e) => setAnypayForm({ ...anypayForm, environment: e.target.value })}
+                className="w-full px-3 py-2 border rounded-lg dark:bg-gray-900 dark:border-gray-700"
+              >
+                <option value="sandbox">Sandbox (Testing)</option>
+                <option value="production">Production</option>
+              </select>
+            </div>
+
+            {/* API Key */}
+            <div className="space-y-2">
+              <Label>API Key</Label>
+              <div className="relative">
+                <Input
+                  type={showSecrets['anypay-api'] ? 'text' : 'password'}
+                  value={anypayForm.apiKey}
+                  onChange={(e) => setAnypayForm({ ...anypayForm, apiKey: e.target.value })}
+                  placeholder="Your AnyPay API Key"
+                  className="pr-10 font-mono text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={() => toggleSecret('anypay-api')}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700"
+                >
+                  {showSecrets['anypay-api'] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+            </div>
+
+            {/* Active Toggle */}
+            <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-900 rounded-lg">
+              <div>
+                <Label className="text-base">Enable AnyPay</Label>
+                <p className="text-sm text-gray-500 mt-1">Make AnyPay available for customers</p>
+              </div>
+              <Switch
+                checked={anypayForm.isActive}
+                onCheckedChange={(checked) => setAnypayForm({ ...anypayForm, isActive: checked })}
+              />
+            </div>
+
+            {/* Save Button */}
+            <Button
+              onClick={saveAnypay}
+              disabled={saving || !anypayForm.apiKey}
+              className="w-full"
+            >
+              {saving ? (
+                <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Saving...</>
+              ) : (
+                <><Save className="h-4 w-4 mr-2" /> Save AnyPay Configuration</>
+              )}
+            </Button>
+          </CardContent>
+        </Card>
+      </TabsContent>
         
         {/* WEBHOOK LOGS */}
         <TabsContent value="logs">

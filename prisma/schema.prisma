@@ -47,7 +47,7 @@ model company {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
   adminPhone String?
-  baseUrl    String?  @default("http://localhost:3000")
+  baseUrl    String?  @default("http://192.168.100.4:3000")
 
   @@map("companies")
 }
@@ -108,6 +108,7 @@ model invoice {
   updatedAt        DateTime             @updatedAt
   paymentLink      String?
   paymentToken     String?              @unique
+  gatewayOrderId   String?              @unique
   customerName     String?
   customerPhone    String?
   customerUsername String?
@@ -181,6 +182,8 @@ model paymentGateway {
   pesapalApiKey       String?
   pesapalSecretKey    String?
   pesapalEnvironment  String       @default("sandbox")
+  anypayApiKey        String?   @map("anypay_api_key")
+  anypayEnvironment   String?   @default("sandbox") @map("anypay_environment")
   payments            payment[]
   logs                webhookLog[]
 
@@ -429,6 +432,7 @@ model voucherOrder {
   status        voucher_orders_status @default(PENDING)
   paymentToken  String?               @unique
   paymentLink   String?
+  gatewayOrderId String?              @unique
   paidAt        DateTime?
   createdAt     DateTime              @default(now())
   updatedAt     DateTime              @updatedAt
@@ -733,6 +737,19 @@ model odpCustomerAssignment {
   @@index([customerId])
   @@index([odpId])
   @@map("odp_customer_assignments")
+}
+
+model networkCustomAP {
+  id        String   @id
+  name      String
+  ipAddress String
+  latitude  Float
+  longitude Float
+  status    String   @default("online")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("network_custom_aps")
 }
 
 model mapSettings {

@@ -28,7 +28,7 @@ function PaymentPendingContent() {
     if (token) {
       fetchInvoiceStatus();
     } else {
-      setError('Token pembayaran tidak ditemukan');
+      setError('Payment token not found');
       setLoading(false);
     }
   }, [token]);
@@ -59,12 +59,12 @@ function PaymentPendingContent() {
           router.push(`/payment/success?token=${token}`);
         }
       } else {
-        setError(data.error || 'Invoice tidak ditemukan');
+        setError(data.error || 'Invoice not found');
       }
     } catch (err) {
       console.error('Fetch error:', err);
       if (!silent) {
-        setError('Gagal mengecek status pembayaran');
+        setError('Failed to check payment status');
       }
     } finally {
       setLoading(false);
@@ -82,7 +82,7 @@ function PaymentPendingContent() {
       <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 flex items-center justify-center p-4">
         <div className="text-center">
           <Loader2 className="w-12 h-12 animate-spin text-blue-600 mx-auto mb-4" />
-          <p className="text-gray-600 dark:text-gray-400">Mengecek status pembayaran...</p>
+          <p className="text-gray-600 dark:text-gray-400">Checking payment status...</p>
         </div>
       </div>
     );
@@ -105,7 +105,7 @@ function PaymentPendingContent() {
             onClick={() => router.push('/')}
             className="px-6 py-3 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white rounded-lg transition-all transform hover:scale-105"
           >
-            Kembali ke Beranda
+            Back to Home
           </button>
         </div>
       </div>
@@ -125,11 +125,11 @@ function PaymentPendingContent() {
           </div>
           
           <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 dark:from-blue-400 dark:to-indigo-400 bg-clip-text text-transparent mt-6 mb-2 animate-slide-up">
-            Menunggu Pembayaran
+            Payment Pending
           </h1>
           
           <p className="text-gray-600 dark:text-gray-400 text-lg animate-slide-up animation-delay-100">
-            Pembayaran sedang diproses
+            Payment is being processed
           </p>
         </div>
 
@@ -150,7 +150,7 @@ function PaymentPendingContent() {
           <div className="p-6 space-y-6">
             {/* Amount */}
             <div className="text-center py-6 bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-800 rounded-xl">
-              <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">Total Pembayaran</p>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">Total Payment</p>
               <p className="text-4xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 dark:from-blue-400 dark:to-indigo-400 bg-clip-text text-transparent">
                 {formatCurrency(invoice.amount)}
               </p>
@@ -161,11 +161,11 @@ function PaymentPendingContent() {
               <div className="flex items-start gap-3">
                 <Info className="w-5 h-5 text-blue-600 dark:text-blue-400 mt-0.5 flex-shrink-0" />
                 <div className="space-y-2 text-sm text-blue-800 dark:text-blue-300">
-                  <p className="font-semibold">Langkah Selanjutnya:</p>
+                  <p className="font-semibold">Next Steps:</p>
                   <ol className="list-decimal list-inside space-y-1 ml-2">
-                    <li>Selesaikan pembayaran melalui halaman yang terbuka</li>
-                    <li>Jangan tutup halaman ini</li>
-                    <li>Status akan otomatis terupdate setelah pembayaran berhasil</li>
+                    <li>Complete the payment on the opened page</li>
+                    <li>Do not close this page</li>
+                    <li>Status will automatically update once payment is successful</li>
                   </ol>
                 </div>
               </div>
@@ -174,14 +174,14 @@ function PaymentPendingContent() {
             {/* Auto Refresh Indicator */}
             <div className="flex items-center justify-center gap-2 text-sm text-gray-500 dark:text-gray-400">
               <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-              <span>Auto-refresh setiap 5 detik</span>
+              <span>Auto-refresh every 5 seconds</span>
             </div>
 
             {/* Payment Link */}
             {invoice.paymentLink && (
               <div className="text-center">
                 <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
-                  Kembali ke halaman pembayaran:
+                  Return to the payment page:
                 </p>
                 <a
                   href={invoice.paymentLink}
@@ -190,7 +190,7 @@ function PaymentPendingContent() {
                   className="inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-lg shadow-lg transition-all transform hover:scale-105"
                 >
                   <ExternalLink className="w-5 h-5" />
-                  <span className="font-semibold">Buka Halaman Pembayaran</span>
+                  <span className="font-semibold">Open Payment Page</span>
                 </a>
               </div>
             )}
@@ -206,7 +206,7 @@ function PaymentPendingContent() {
           >
             <RefreshCw className={`w-5 h-5 ${checking ? 'animate-spin' : ''}`} />
             <span className="font-semibold">
-              {checking ? 'Mengecek...' : 'Cek Status Sekarang'}
+              {checking ? 'Checking...' : 'Check Status Now'}
             </span>
           </button>
 
@@ -214,14 +214,14 @@ function PaymentPendingContent() {
             onClick={() => router.push(`/pay/${token}`)}
             className="px-6 py-4 bg-gradient-to-r from-gray-600 to-gray-700 hover:from-gray-700 hover:to-gray-800 text-white rounded-xl transition-all transform hover:scale-105"
           >
-            <span className="font-semibold">Kembali ke Invoice</span>
+            <span className="font-semibold">Back to Invoice</span>
           </button>
         </div>
 
         {/* Help Text */}
         <div className="text-center mt-8 text-sm text-gray-500 dark:text-gray-400 animate-fade-in animation-delay-400">
-          <p>Pembayaran memerlukan waktu beberapa saat untuk diverifikasi</p>
-          <p className="mt-1">Halaman ini akan otomatis redirect setelah pembayaran berhasil</p>
+          <p>Payment may take a few moments to be verified</p>
+          <p className="mt-1">This page will automatically redirect after successful payment</p>
         </div>
       </div>
 

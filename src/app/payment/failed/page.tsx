@@ -12,7 +12,8 @@ function PaymentFailedContent() {
   
   const [loading, setLoading] = useState(true);
   const [invoiceNumber, setInvoiceNumber] = useState<string>('');
-  const [companyPhone, setCompanyPhone] = useState('6281234567890');
+  // Set default placeholder to a standard Tanzanian prefix
+  const [companyPhone, setCompanyPhone] = useState('255700000000');
 
   useEffect(() => {
     if (token) {
@@ -21,13 +22,13 @@ function PaymentFailedContent() {
       setLoading(false);
     }
     
-    // Fetch company phone
+    // Fetch company phone and adapt prefix to +255
     fetch('/api/company')
       .then(res => res.json())
       .then(data => {
         if (data.phone) {
-          let phone = data.phone.replace(/^0/, '62');
-          if (!phone.startsWith('62')) phone = '62' + phone;
+          let phone = data.phone.replace(/^0/, '255');
+          if (!phone.startsWith('255')) phone = '255' + phone;
           setCompanyPhone(phone);
         }
       })
@@ -54,7 +55,7 @@ function PaymentFailedContent() {
       <div className="min-h-screen bg-gradient-to-br from-red-50 via-orange-50 to-yellow-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 flex items-center justify-center p-4">
         <div className="text-center">
           <Loader2 className="w-12 h-12 animate-spin text-red-600 mx-auto mb-4" />
-          <p className="text-gray-600 dark:text-gray-400">Memuat informasi...</p>
+          <p className="text-gray-600 dark:text-gray-400">Loading information...</p>
         </div>
       </div>
     );
@@ -73,11 +74,11 @@ function PaymentFailedContent() {
           </div>
           
           <h1 className="text-4xl font-bold bg-gradient-to-r from-red-600 to-orange-600 dark:from-red-400 dark:to-orange-400 bg-clip-text text-transparent mt-6 mb-2 animate-slide-up">
-            Pembayaran Gagal
+            Payment Failed
           </h1>
           
           <p className="text-gray-600 dark:text-gray-400 text-lg animate-slide-up animation-delay-100">
-            Transaksi tidak dapat diselesaikan
+            The transaction could not be completed
           </p>
         </div>
 
@@ -112,21 +113,21 @@ function PaymentFailedContent() {
             {/* Info */}
             <div className="bg-gray-50 dark:bg-gray-900 rounded-xl p-6 space-y-3">
               <p className="text-sm text-gray-700 dark:text-gray-300">
-                <strong>Kemungkinan Penyebab:</strong>
+                <strong>Possible Causes:</strong>
               </p>
               <ul className="text-sm text-gray-600 dark:text-gray-400 space-y-2 list-disc list-inside">
-                <li>Saldo atau limit kartu tidak mencukupi</li>
-                <li>Pembayaran dibatalkan oleh pengguna</li>
-                <li>Transaksi ditolak oleh bank</li>
-                <li>Waktu pembayaran telah habis</li>
-                <li>Koneksi internet terputus</li>
+                <li>Insufficient balance or card limit</li>
+                <li>Payment was cancelled by the user</li>
+                <li>Transaction declined by the provider</li>
+                <li>Payment session expired</li>
+                <li>Internet connection interrupted</li>
               </ul>
             </div>
 
             {/* Help Text */}
             <div className="text-center text-sm text-gray-500 dark:text-gray-400">
-              <p>Jangan khawatir, tidak ada biaya yang dikenakan.</p>
-              <p className="mt-1">Silakan coba lagi atau hubungi kami jika masalah berlanjut.</p>
+              <p>Don't worry, no charges were applied.</p>
+              <p className="mt-1">Please try again or contact support if the problem persists.</p>
             </div>
           </div>
         </div>
@@ -138,7 +139,7 @@ function PaymentFailedContent() {
             className="flex-1 flex items-center justify-center gap-2 px-6 py-4 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-xl border-2 border-gray-200 dark:border-gray-700 hover:border-red-500 dark:hover:border-red-500 transition-all transform hover:scale-105"
           >
             <Home className="w-5 h-5" />
-            <span className="font-semibold">Kembali</span>
+            <span className="font-semibold">Home</span>
           </button>
           
           {token && (
@@ -147,7 +148,7 @@ function PaymentFailedContent() {
               className="flex-1 flex items-center justify-center gap-2 px-6 py-4 bg-gradient-to-r from-red-600 to-orange-600 hover:from-red-700 hover:to-orange-700 text-white rounded-xl shadow-lg shadow-red-500/30 transition-all transform hover:scale-105"
             >
               <RefreshCw className="w-5 h-5" />
-              <span className="font-semibold">Coba Lagi</span>
+              <span className="font-semibold">Try Again</span>
             </button>
           )}
         </div>
@@ -155,7 +156,7 @@ function PaymentFailedContent() {
         {/* Support Info */}
         <div className="text-center mt-8 animate-fade-in animation-delay-400">
           <p className="text-sm text-gray-500 dark:text-gray-400 mb-2">
-            Butuh bantuan?
+            Need help?
           </p>
           <a 
             href={`https://wa.me/${companyPhone}`}
@@ -163,7 +164,7 @@ function PaymentFailedContent() {
             rel="noopener noreferrer"
             className="text-green-600 hover:text-green-700 dark:text-green-400 dark:hover:text-green-300 font-medium text-sm transition-colors"
           >
-            Hubungi Customer Service via WhatsApp
+            Contact Customer Support via WhatsApp
           </a>
         </div>
       </div>

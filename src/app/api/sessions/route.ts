@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 
-// Helper to format bytes
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
   const k = 1024;
@@ -10,7 +10,6 @@ function formatBytes(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
-// Helper to format duration
 function formatDuration(seconds: number): string {
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
@@ -25,30 +24,48 @@ function formatDuration(seconds: number): string {
   }
 }
 
+interface ProcessedSession {
+  id: string;
+  username: string;
+  sessionId: string;
+  type: 'pppoe' | 'hotspot';
+  nasIpAddress: string | null;
+  framedIpAddress: string | null;
+  macAddress: string | null;
+  startTime: Date | null;
+  duration: number;
+  durationFormatted: string;
+  uploadBytes: number;
+  downloadBytes: number;
+  totalBytes: number;
+  uploadFormatted: string;
+  downloadFormatted: string;
+  totalFormatted: string;
+  router: { id: string; name: string } | null;
+  user: { id: string; name: string | null; phone: string | null; profile: string | undefined } | null;
+  voucher: { id: string; status: string; profile: string | undefined } | null;
+}
+
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
-    const type = searchParams.get('type'); // 'pppoe' | 'hotspot' | null
+    const type = searchParams.get('type');
     const routerId = searchParams.get('routerId');
     const search = searchParams.get('search');
 
-    // Calculate cutoff times for zombie detection
     const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
-    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000); // For hotspot fallback
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
-    // Build where clause for radacct (active sessions)
-    const where: any = {
+    const where: Prisma.radacctWhereInput = {
       AND: [
-        { acctstoptime: null }, // Only sessions without stop time
+        { acctstoptime: null },
         {
           OR: [
-            // PPPoE sessions: must have recent interim update (< 10 min)
             { acctupdatetime: { gte: tenMinutesAgo } },
-            // Hotspot vouchers: might not have interim updates, so use longer window
             { 
               AND: [
-                { acctupdatetime: null }, // No interim update
-                { acctstarttime: { gte: oneDayAgo } }, // Started within last 24 hours
+                { acctupdatetime: null },
+                { acctstarttime: { gte: oneDayAgo } },
               ],
             },
           ],
@@ -56,9 +73,10 @@ export async function GET(request: NextRequest) {
       ],
     };
 
-    // Add search filter without overwriting zombie filter
+    const andConditions = where.AND as Prisma.radacctWhereInput[];
+
     if (search) {
-      where.AND.push({
+      andConditions.push({
         OR: [
           { username: { contains: search } },
           { framedipaddress: { contains: search } },
@@ -66,59 +84,49 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // Add router filter
     if (routerId) {
       const router = await prisma.router.findUnique({
         where: { id: routerId },
         select: { nasname: true },
       });
       if (router) {
-        where.AND.push({ nasipaddress: router.nasname });
+        andConditions.push({ nasipaddress: router.nasname });
       }
     }
 
-    // Fetch active sessions from radacct
     const radacctSessions = await prisma.radacct.findMany({
       where,
       orderBy: { acctstarttime: 'desc' },
     });
 
-    // Process sessions and enrich with user/voucher info
     const sessions = await Promise.all(
-      radacctSessions.map(async (session) => {
+      radacctSessions.map(async (session): Promise<ProcessedSession | null> => {
         const username = session.username;
         
-        // Determine session type by checking if user exists in pppoeUser or hotspotVoucher
         const pppoeUser = await prisma.pppoeUser.findUnique({
           where: { username },
           select: { id: true },
         });
-        const sessionType = pppoeUser ? 'pppoe' : 'hotspot';
+        const sessionType: 'pppoe' | 'hotspot' = pppoeUser ? 'pppoe' : 'hotspot';
         
-        // Apply type filter
         if (type && type !== sessionType) {
           return null;
         }
 
-        // Calculate duration
         const startTime = session.acctstarttime ? new Date(session.acctstarttime) : new Date();
         const durationSeconds = session.acctsessiontime || Math.floor((Date.now() - startTime.getTime()) / 1000);
         
-        // Calculate bandwidth
         const uploadBytes = Number(session.acctinputoctets || 0);
         const downloadBytes = Number(session.acctoutputoctets || 0);
         const totalBytes = uploadBytes + downloadBytes;
 
-        // Get router info
         const router = await prisma.router.findFirst({
           where: { nasname: session.nasipaddress },
           select: { id: true, name: true },
         });
 
-        // Get user/voucher info based on type
-        let userInfo: any = null;
         if (sessionType === 'pppoe') {
-          userInfo = await prisma.pppoeUser.findUnique({
+          const userInfo = await prisma.pppoeUser.findUnique({
             where: { username },
             select: {
               id: true,
@@ -129,8 +137,35 @@ export async function GET(request: NextRequest) {
               },
             },
           });
+
+          return {
+            id: session.radacctid.toString(),
+            username: session.username,
+            sessionId: session.acctsessionid,
+            type: sessionType,
+            nasIpAddress: session.nasipaddress,
+            framedIpAddress: session.framedipaddress,
+            macAddress: session.callingstationid,
+            startTime: session.acctstarttime,
+            duration: durationSeconds,
+            durationFormatted: formatDuration(durationSeconds),
+            uploadBytes,
+            downloadBytes,
+            totalBytes,
+            uploadFormatted: formatBytes(uploadBytes),
+            downloadFormatted: formatBytes(downloadBytes),
+            totalFormatted: formatBytes(totalBytes),
+            router: router ? { id: router.id, name: router.name } : null,
+            user: userInfo ? {
+              id: userInfo.id,
+              name: userInfo.name,
+              phone: userInfo.phone,
+              profile: userInfo.profile?.name,
+            } : null,
+            voucher: null,
+          };
         } else {
-          userInfo = await prisma.hotspotVoucher.findUnique({
+          const voucherInfo = await prisma.hotspotVoucher.findUnique({
             where: { code: username },
             select: {
               id: true,
@@ -140,56 +175,45 @@ export async function GET(request: NextRequest) {
               },
             },
           });
-        }
 
-        return {
-          id: session.radacctid.toString(),
-          username: session.username,
-          sessionId: session.acctsessionid,
-          type: sessionType,
-          nasIpAddress: session.nasipaddress,
-          framedIpAddress: session.framedipaddress,
-          macAddress: session.callingstationid,
-          startTime: session.acctstarttime,
-          duration: durationSeconds,
-          durationFormatted: formatDuration(durationSeconds),
-          uploadBytes,
-          downloadBytes,
-          totalBytes,
-          uploadFormatted: formatBytes(uploadBytes),
-          downloadFormatted: formatBytes(downloadBytes),
-          totalFormatted: formatBytes(totalBytes),
-          router: router ? {
-            id: router.id,
-            name: router.name,
-          } : null,
-          user: sessionType === 'pppoe' && userInfo ? {
-            id: userInfo.id,
-            name: userInfo.name,
-            phone: userInfo.phone,
-            profile: userInfo.profile?.name,
-          } : null,
-          voucher: sessionType === 'hotspot' && userInfo ? {
-            id: userInfo.id,
-            status: userInfo.status,
-            profile: userInfo.profile?.name,
-          } : null,
-        };
+          return {
+            id: session.radacctid.toString(),
+            username: session.username,
+            sessionId: session.acctsessionid,
+            type: sessionType,
+            nasIpAddress: session.nasipaddress,
+            framedIpAddress: session.framedipaddress,
+            macAddress: session.callingstationid,
+            startTime: session.acctstarttime,
+            duration: durationSeconds,
+            durationFormatted: formatDuration(durationSeconds),
+            uploadBytes,
+            downloadBytes,
+            totalBytes,
+            uploadFormatted: formatBytes(uploadBytes),
+            downloadFormatted: formatBytes(downloadBytes),
+            totalFormatted: formatBytes(totalBytes),
+            router: router ? { id: router.id, name: router.name } : null,
+            user: null,
+            voucher: voucherInfo ? {
+              id: voucherInfo.id,
+              status: voucherInfo.status,
+              profile: voucherInfo.profile?.name,
+            } : null,
+          };
+        }
       })
     );
 
-    // Filter out nulls (from type filtering)
-    const filteredSessions = sessions.filter(s => s !== null);
+    const filteredSessions = sessions.filter((s): s is ProcessedSession => s !== null);
 
-    // Calculate active session statistics
     const stats = {
       total: filteredSessions.length,
-      pppoe: filteredSessions.filter(s => s?.type === 'pppoe').length,
-      hotspot: filteredSessions.filter(s => s?.type === 'hotspot').length,
-      totalBandwidth: filteredSessions.reduce((sum, s) => sum + (s?.totalBytes || 0), 0),
+      pppoe: filteredSessions.filter(s => s.type === 'pppoe').length,
+      hotspot: filteredSessions.filter(s => s.type === 'hotspot').length,
+      totalBandwidth: filteredSessions.reduce((sum, s) => sum + s.totalBytes, 0),
     };
 
-    // Calculate ALL TIME statistics (including closed sessions)
     const allTimeStats = await prisma.radacct.aggregate({
       _sum: {
         acctinputoctets: true,
