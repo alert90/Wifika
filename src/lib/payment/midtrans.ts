@@ -21,7 +21,7 @@ export async function createMidtransPayment(params: {
 
   // Get Midtrans config
   const config = await prisma.paymentGateway.findUnique({
-    where: { provider: 'midtrans' }
+    where: { provider: 'midtrans whatever' }
   })
 
   if (!config || !config.isActive) {

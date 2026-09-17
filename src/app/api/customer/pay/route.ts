@@ -87,8 +87,7 @@ export async function POST(request: NextRequest) {
 
     console.log('[Customer Pay] Order created:', orderNumber);
 
-    // !!! CRITICAL FIX: Use localhost for internal API calls, NOT public domain !!!
-    const baseUrl = process.env.INTERNAL_API_URL || 'http://localhost:3000';
+    const baseUrl = process.env.INTERNAL_API_URL;
     const paymentUrl = `${baseUrl}/api/payment/create`;
     console.log('[Customer Pay] Calling internal payment/create at:', paymentUrl);
 
