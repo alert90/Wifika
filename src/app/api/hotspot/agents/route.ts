@@ -1,51 +1,108 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
+import { prisma } from '@/lib/prisma';
 import { WhatsAppService } from '@/lib/whatsapp';
 import { toNairobi, nowNairobi } from '@/lib/timezone';
+import crypto from 'crypto';
 
-const prisma = new PrismaClient();
+// Disable caching
+export const dynamic = 'force-dynamic';
 
-// GET - List all agents with statistics
+// Local type definitions (avoids dependency on Prisma generated types)
+interface AgentRow {
+  id: string;
+  name: string;
+  phone: string;
+  email: string | null;
+  address: string | null;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+interface ProfileRow {
+  id: string;
+  name: string;
+  costPrice: number;
+  resellerFee: number;
+  sellingPrice: number;
+}
+
+interface VoucherWithProfile {
+  id: string;
+  code: string;
+  batchCode: string | null;
+  status: string;
+  firstLoginAt: Date | null;
+  expiresAt: Date | null;
+  createdAt: Date;
+  profile: ProfileRow | null;
+}
+
+// GET - List all agents with statistics (calculated from vouchers)
 export async function GET() {
   try {
-    const agents = await prisma.agent.findMany({
-      include: {
-        sales: {
-          select: {
-            amount: true,
-            createdAt: true,
-          },
-        },
-      },
+    const agents = (await prisma.agent.findMany({
       orderBy: { createdAt: 'desc' },
-    });
+    })) as unknown as AgentRow[];
 
-    // Calculate statistics for each agent
-    const agentsWithStats = agents.map((agent) => {
-      // Use WIB timezone for month calculation (UTC stored in DB)
-      const now = nowNairobi();
-      const currentMonth = now.getMonth();
-      const currentYear = now.getFullYear();
+    // Get all used vouchers once, then group by agent
+    const allVouchers = (await prisma.hotspotVoucher.findMany({
+      where: {
+        batchCode: { not: null },
+        firstLoginAt: { not: null },
+        status: { in: ['ACTIVE', 'EXPIRED'] },
+      },
+      include: {
+        profile: true,
+      },
+    })) as unknown as VoucherWithProfile[];
 
-      // Current month sales - Convert UTC to WIB before comparison
-      const currentMonthSales = agent.sales.filter((sale) => {
-        const saleDate = toNairobi(sale.createdAt);
-        if (!saleDate) return false;
-        return (
-          saleDate.getMonth() === currentMonth &&
-          saleDate.getFullYear() === currentYear
-        );
-      });
+    const now = nowNairobi();
+    const currentMonth = now.getMonth();
+    const currentYear = now.getFullYear();
 
-      const currentMonthTotal = currentMonthSales.reduce(
-        (sum, sale) => sum + sale.amount,
+    const agentsWithStats = agents.map((agent: AgentRow) => {
+      // Match vouchers by batch code pattern (agent name normalized)
+      const agentPattern = agent.name.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const agentVouchers = allVouchers.filter((v) =>
+        v.batchCode?.toUpperCase().startsWith(agentPattern)
+      );
+
+      // Current month vouchers
+      const currentMonthVouchers = agentVouchers.filter(
+        (v: VoucherWithProfile) => {
+          const saleDate = toNairobi(v.firstLoginAt!);
+          if (!saleDate) return false;
+          return (
+            saleDate.getMonth() === currentMonth &&
+            saleDate.getFullYear() === currentYear
+          );
+        }
+      );
+
+      // Commission = resellerFee per voucher (agent's profit)
+      const currentMonthCommission = currentMonthVouchers.reduce(
+        (sum: number, v: VoucherWithProfile) =>
+          sum + (v.profile?.resellerFee || 0),
         0
       );
-      const currentMonthCount = currentMonthSales.length;
+      const totalCommission = agentVouchers.reduce(
+        (sum: number, v: VoucherWithProfile) =>
+          sum + (v.profile?.resellerFee || 0),
+        0
+      );
 
-      // Total sales
-      const totalSales = agent.sales.reduce((sum, sale) => sum + sale.amount, 0);
-      const totalCount = agent.sales.length;
+      // Owed = costPrice per voucher (what agent pays admin)
+      const currentMonthOwed = currentMonthVouchers.reduce(
+        (sum: number, v: VoucherWithProfile) =>
+          sum + (v.profile?.costPrice || 0),
+        0
+      );
+      const totalOwed = agentVouchers.reduce(
+        (sum: number, v: VoucherWithProfile) =>
+          sum + (v.profile?.costPrice || 0),
+        0
+      );
 
       return {
         id: agent.id,
@@ -58,12 +115,14 @@ export async function GET() {
         updatedAt: agent.updatedAt,
         stats: {
           currentMonth: {
-            total: currentMonthTotal,
-            count: currentMonthCount,
+            total: currentMonthCommission,
+            count: currentMonthVouchers.length,
+            owed: currentMonthOwed,
           },
           allTime: {
-            total: totalSales,
-            count: totalCount,
+            total: totalCommission,
+            count: agentVouchers.length,
+            owed: totalOwed,
           },
         },
       };
@@ -89,7 +148,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Check if phone already exists
     const existing = await prisma.agent.findUnique({
       where: { phone },
     });
@@ -111,15 +169,19 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    // Send WhatsApp notification with agent portal link
+    // Send WhatsApp notification
     try {
       const company = await prisma.company.findFirst();
-      const baseUrl = company?.baseUrl || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+      const baseUrl =
+        company?.baseUrl ||
+        process.env.NEXT_PUBLIC_APP_URL ||
+        'http://localhost:3000';
       const agentPortalUrl = `${baseUrl}/agent`;
       const companyName = company?.name || 'SKYLINK';
       const companyPhone = company?.phone || '';
 
-      const message = `🎉 *Welcome to join as an agent!*\n\n` +
+      const message =
+        `🎉 *Welcome to join as an agent!*\n\n` +
         `Habari *${name}*,\n\n` +
         `You have registered as an agent ${companyName}. ` +
         `Now you can sell internet vouchers and earn commission!\n\n` +
@@ -142,13 +204,10 @@ export async function POST(request: NextRequest) {
 
       await WhatsAppService.sendMessage({
         phone: phone,
-        message
+        message,
       });
-
-      console.log(`[Agent] WhatsApp sent to ${phone} with portal link`);
     } catch (waError) {
       console.error('[Agent] Failed to send WhatsApp:', waError);
-      // Don't fail agent creation if WhatsApp fails
     }
 
     return NextResponse.json({ agent }, { status: 201 });
@@ -168,7 +227,6 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Agent ID is required' }, { status: 400 });
     }
 
-    // Check if agent exists
     const existing = await prisma.agent.findUnique({
       where: { id },
     });
@@ -177,7 +235,6 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
     }
 
-    // Check if phone is being changed and if new phone already exists
     if (phone && phone !== existing.phone) {
       const phoneExists = await prisma.agent.findUnique({
         where: { phone },

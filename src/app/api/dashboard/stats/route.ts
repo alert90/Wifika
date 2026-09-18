@@ -1,6 +1,5 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { format } from "date-fns";
 import { nowNairobi, startOfDayNairobiToUTC, endOfDayNairobiToUTC } from "@/lib/timezone";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
@@ -9,7 +8,26 @@ import { authOptions } from "@/lib/auth";
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-export async function GET(request: NextRequest) {
+// Local type helpers (avoids dependency on Prisma generated types)
+interface VoucherWithProfile {
+  id: string;
+  code: string;
+  batchCode: string | null;
+  status: string;
+  firstLoginAt: Date | null;
+  profile: {
+    name: string;
+    costPrice: number;
+    resellerFee: number;
+    sellingPrice: number;
+  } | null;
+}
+
+interface AgentNameOnly {
+  name: string;
+}
+
+export async function GET() {
   try {
     // Check authentication
     const session = await getServerSession(authOptions);
@@ -17,51 +35,39 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Allow all authenticated admin users (they use AdminRole: SUPER_ADMIN, FINANCE, etc.)
-    // No additional role check needed - if they can login to admin, they can see dashboard
-    const userRole = (session.user as any).role;
+    const userRole = (session.user as { role?: string }).role;
     console.log('Dashboard stats accessed by role:', userRole);
-    // Get current time in WIB timezone (database stores UTC)
-    // Use WIB for month boundaries to match user expectations
+
     const now = nowNairobi();
-    
-    // Calculate month boundaries in WIB, convert to UTC for database queries
+
     const startOfMonth = startOfDayNairobiToUTC(new Date(now.getFullYear(), now.getMonth(), 1));
     const startOfLastMonth = startOfDayNairobiToUTC(new Date(now.getFullYear(), now.getMonth() - 1, 1));
     const endOfLastMonth = endOfDayNairobiToUTC(new Date(now.getFullYear(), now.getMonth(), 0));
+    const startOfToday = startOfDayNairobiToUTC(new Date(now.getFullYear(), now.getMonth(), now.getDate()));
 
-    // Total users
+    // ========== EXISTING STATS ==========
     const totalUsers = await prisma.pppoeUser.count();
     const lastMonthUsers = await prisma.pppoeUser.count({
-      where: {
-        createdAt: {
-          gte: startOfLastMonth,
-          lte: endOfLastMonth,
-        },
-      },
+      where: { createdAt: { gte: startOfLastMonth, lte: endOfLastMonth } },
     });
-    const usersGrowth =
-      lastMonthUsers > 0
-        ? ((totalUsers - lastMonthUsers) / lastMonthUsers) * 100
-        : 0;
+    const usersGrowth = lastMonthUsers > 0
+      ? ((totalUsers - lastMonthUsers) / lastMonthUsers) * 100
+      : 0;
 
-    // Active sessions (currently online from radacct) - with zombie detection
     const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
     const activeSessions = await prisma.radacct.count({
       where: {
         AND: [
-          { acctstoptime: null }, // Only sessions without stop time
+          { acctstoptime: null },
           {
             OR: [
-              // PPPoE sessions: must have recent interim update (< 10 min)
               { acctupdatetime: { gte: tenMinutesAgo } },
-              // Hotspot vouchers: might not have interim updates, so use longer window
               {
                 AND: [
-                  { acctupdatetime: null }, // No interim update
-                  { acctstarttime: { gte: oneDayAgo } }, // Started within last 24 hours
+                  { acctupdatetime: null },
+                  { acctstarttime: { gte: oneDayAgo } },
                 ],
               },
             ],
@@ -70,69 +76,52 @@ export async function GET(request: NextRequest) {
       },
     });
 
-    // Pending invoices
     const pendingInvoices = await prisma.invoice.count({
-      where: {
-        status: "PENDING",
-      },
+      where: { status: "PENDING" },
     });
 
-    // Overdue invoices count for last month comparison
     const lastMonthPendingInvoices = await prisma.invoice.count({
       where: {
         status: "PENDING",
-        createdAt: {
-          gte: startOfLastMonth,
-          lte: endOfLastMonth,
-        },
+        createdAt: { gte: startOfLastMonth, lte: endOfLastMonth },
       },
     });
-    const invoicesChange =
-      lastMonthPendingInvoices > 0
-        ? ((pendingInvoices - lastMonthPendingInvoices) /
-            lastMonthPendingInvoices) *
-          100
-        : 0;
+    const invoicesChange = lastMonthPendingInvoices > 0
+      ? ((pendingInvoices - lastMonthPendingInvoices) / lastMonthPendingInvoices) * 100
+      : 0;
 
-    // Revenue this month (Keuangan - Transactions INCOME)
-    // Query using UTC date range (database stores UTC)
+    // Revenue this month from transactions
     const incomeThisMonth = await prisma.transaction.aggregate({
       where: {
         type: 'INCOME',
-        date: {
-          gte: startOfMonth,
-          lte: now,
-        },
+        date: { gte: startOfMonth, lte: now },
       },
-      _sum: {
-        amount: true,
-      },
+      _sum: { amount: true },
     });
 
-    // Revenue last month - use Prisma aggregate
     const incomeLastMonth = await prisma.transaction.aggregate({
       where: {
         type: 'INCOME',
-        date: {
-          gte: startOfLastMonth,
-          lte: endOfLastMonth,
-        },
+        date: { gte: startOfLastMonth, lte: endOfLastMonth },
       },
-      _sum: {
-        amount: true,
-      },
+      _sum: { amount: true },
+    });
+
+    // All-time transaction income
+    const incomeAllTime = await prisma.transaction.aggregate({
+      where: { type: 'INCOME' },
+      _sum: { amount: true },
     });
 
     const revenueThisMonth = Number(incomeThisMonth._sum.amount) || 0;
     const revenueLastMonth = Number(incomeLastMonth._sum.amount) || 0;
-    const revenueGrowth =
-      revenueLastMonth > 0
-        ? ((revenueThisMonth - revenueLastMonth) / revenueLastMonth) * 100
-        : 0;
+    const revenueAllTime = Number(incomeAllTime._sum.amount) || 0;
+    const revenueGrowth = revenueLastMonth > 0
+      ? ((revenueThisMonth - revenueLastMonth) / revenueLastMonth) * 100
+      : 0;
 
-    // Format revenue to TZS
     const formatRevenue = (amount: number) => {
-      return new Intl.NumberFormat("id-ID", {
+      return new Intl.NumberFormat("en-TZ", {
         style: "currency",
         currency: "TZS",
         minimumFractionDigits: 0,
@@ -140,91 +129,137 @@ export async function GET(request: NextRequest) {
       }).format(amount);
     };
 
-    // Network stats
     const pppoeActiveCount = await prisma.pppoeUser.count({
-      where: {
-        status: "active",
-      },
+      where: { status: "active" },
     });
 
-    // Hotspot active vouchers (ACTIVE status)
     const hotspotActiveCount = await prisma.hotspotVoucher.count({
-      where: {
-        status: "ACTIVE",
-      },
+      where: { status: "ACTIVE" },
     });
 
-    // Bandwidth usage from radacct (all time)
     const bandwidthData = await prisma.radacct.aggregate({
-      _sum: {
-        acctinputoctets: true,
-        acctoutputoctets: true,
-      },
+      _sum: { acctinputoctets: true, acctoutputoctets: true },
     });
 
     const totalBytesIn = bandwidthData._sum.acctinputoctets || BigInt(0);
     const totalBytesOut = bandwidthData._sum.acctoutputoctets || BigInt(0);
     const totalBytes = Number(totalBytesIn) + Number(totalBytesOut);
 
-    // Format bytes to readable format
     const formatBandwidth = (bytes: number) => {
       const tb = bytes / 1024 ** 4;
       const gb = bytes / 1024 ** 3;
-
-      if (tb >= 1) {
-        return `${tb.toFixed(2)} TB`;
-      } else if (gb >= 1) {
-        return `${gb.toFixed(2)} GB`;
-      } else {
-        return `${(bytes / 1024 ** 2).toFixed(2)} MB`;
-      }
+      if (tb >= 1) return `${tb.toFixed(2)} TB`;
+      if (gb >= 1) return `${gb.toFixed(2)} GB`;
+      return `${(bytes / 1024 ** 2).toFixed(2)} MB`;
     };
 
-    // Recent activities - last 5 events
+    // ========== NEW: AGENT + VOUCHER SALES + REVENUE BREAKDOWN ==========
+
+    // 1. Agent counts
+    const totalAgents = await prisma.agent.count();
+    const activeAgents = await prisma.agent.count({ where: { isActive: true } });
+
+    // 2. Build set of agent name prefixes for categorizing vouchers
+    const allAgentNames = (await prisma.agent.findMany({
+      select: { name: true },
+    })) as unknown as AgentNameOnly[];
+
+    const agentPatterns = new Set(
+      allAgentNames.map((a) =>
+        a.name.toUpperCase().replace(/[^A-Z0-9]/g, '')
+      )
+    );
+
+    // 3. Get all used vouchers (sold = has firstLoginAt + ACTIVE/EXPIRED)
+    const usedVouchers = (await prisma.hotspotVoucher.findMany({
+      where: {
+        firstLoginAt: { not: null },
+        status: { in: ['ACTIVE', 'EXPIRED'] },
+      },
+      include: { profile: true },
+    })) as unknown as VoucherWithProfile[];
+
+    // 4. Categorize vouchers + compute totals
+    let agentVouchersCount = 0;
+    let directVouchersCount = 0;
+    let grossOwed = 0;          // sum of costPrice for agent vouchers
+    let directSalesTotal = 0;   // sum of sellingPrice for direct vouchers
+    let currentMonthVouchersCount = 0;
+    let todayVouchersCount = 0;
+
+    for (const v of usedVouchers) {
+      const firstLoginAt = v.firstLoginAt as Date;
+
+      if (firstLoginAt >= startOfToday) todayVouchersCount++;
+      if (firstLoginAt >= startOfMonth) currentMonthVouchersCount++;
+
+      const prefix = (v.batchCode || '').toUpperCase().split('-')[0];
+      const isAgentVoucher = prefix && agentPatterns.has(prefix);
+
+      if (isAgentVoucher) {
+        agentVouchersCount++;
+        grossOwed += v.profile?.costPrice || 0;
+      } else {
+        directVouchersCount++;
+        directSalesTotal += v.profile?.sellingPrice || 0;
+      }
+    }
+
+    // 5. Agent payments received (money agents already paid)
+    const agentPaidAgg = await prisma.agentPayment.aggregate({
+      where: { status: { in: ['PAID', 'SUCCESS'] } },
+      _sum: { amount: true },
+    });
+    const agentPaid = Number(agentPaidAgg._sum.amount) || 0;
+
+    // 6. Outstanding = gross owed - what's been paid (never negative)
+    const agentOutstanding = Math.max(0, grossOwed - agentPaid);
+
+    // 7. Total revenue (collected) = transaction income + agent payments + direct voucher sales
+    const totalRevenueCollected = revenueAllTime + agentPaid + directSalesTotal;
+
+    // ========== RECENT ACTIVITIES ==========
     const recentPayments = await prisma.payment.findMany({
       take: 3,
-      orderBy: {
-        paidAt: "desc",
-      },
+      orderBy: { paidAt: "desc" },
       include: {
         invoice: {
           select: {
             customerUsername: true,
-            user: {
-              select: {
-                username: true,
-              },
-            },
+            user: { select: { username: true } },
           },
         },
       },
     });
 
     const recentInvoices = await prisma.invoice.findMany({
-      where: {
-        status: "PENDING",
-        dueDate: {
-          lt: now,
-        },
-      },
+      where: { status: "PENDING", dueDate: { lt: now } },
       take: 2,
-      orderBy: {
-        dueDate: "desc",
-      },
+      orderBy: { dueDate: "desc" },
       select: {
         customerUsername: true,
         dueDate: true,
-        user: {
-          select: {
-            username: true,
-          },
-        },
+        user: { select: { username: true } },
       },
     });
 
-    // Format activities
+    type PaymentRow = {
+      id: string;
+      paidAt: Date;
+      invoice: {
+        customerUsername: string | null;
+        user: { username: string } | null;
+      };
+    };
+
+    type InvoiceRow = {
+      customerUsername: string | null;
+      dueDate: Date;
+      user: { username: string } | null;
+    };
+
     const activities = [
-      ...recentPayments.map((payment) => ({
+      ...(recentPayments as unknown as PaymentRow[]).map((payment: PaymentRow) => ({
         id: payment.id,
         user:
           payment.invoice.user?.username ||
@@ -234,7 +269,7 @@ export async function GET(request: NextRequest) {
         time: payment.paidAt.toISOString(),
         status: "success" as const,
       })),
-      ...recentInvoices.map((invoice) => ({
+      ...(recentInvoices as unknown as InvoiceRow[]).map((invoice: InvoiceRow) => ({
         id: invoice.customerUsername || "unknown",
         user: invoice.user?.username || invoice.customerUsername || "Unknown",
         action: "Invoice overdue",
@@ -245,22 +280,14 @@ export async function GET(request: NextRequest) {
       .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
       .slice(0, 5);
 
-    // System status checks
+    // ========== SYSTEM STATUS ==========
     let radiusStatus = false;
-    let databaseStatus = true; // If we got here, database is connected
-    let apiStatus = true; // If we got here, API is running
-
-    // Check RADIUS by checking if radacct table has recent records
     try {
       const recentRadacct = await prisma.radacct.findFirst({
-        where: {
-          acctstarttime: {
-            gte: new Date(Date.now() - 3600000), // Last 1 hour
-          },
-        },
+        where: { acctstarttime: { gte: new Date(Date.now() - 3600000) } },
       });
       radiusStatus = !!recentRadacct;
-    } catch (error) {
+    } catch {
       radiusStatus = false;
     }
 
@@ -273,7 +300,7 @@ export async function GET(request: NextRequest) {
         },
         activeSessions: {
           value: activeSessions,
-          change: null, // Can calculate if needed
+          change: null,
         },
         pendingInvoices: {
           value: pendingInvoices,
@@ -289,17 +316,40 @@ export async function GET(request: NextRequest) {
         hotspotSessions: hotspotActiveCount,
         bandwidth: formatBandwidth(totalBytes),
       },
+      // NEW: Agent + Sales overview
+      agents: {
+        total: totalAgents,
+        active: activeAgents,
+        grossOwed,             // total costPrice of used agent vouchers
+        paid: agentPaid,       // amount agents already paid
+        outstanding: agentOutstanding, // remaining balance owed
+      },
+      sales: {
+        totalVouchers: usedVouchers.length,
+        agentVouchers: agentVouchersCount,
+        directVouchers: directVouchersCount,
+        currentMonthVouchers: currentMonthVouchersCount,
+        todayVouchers: todayVouchersCount,
+      },
+      // NEW: Revenue breakdown (all-time)
+      revenueBreakdown: {
+        transactionIncome: revenueAllTime,
+        agentPaid,
+        directVoucherSales: directSalesTotal,
+        total: totalRevenueCollected,
+      },
       activities,
       systemStatus: {
         radius: radiusStatus,
-        database: databaseStatus,
-        api: apiStatus,
+        database: true,
+        api: true,
       },
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Dashboard stats error:", error);
+    const message = error instanceof Error ? error.message : 'Internal error';
     return NextResponse.json(
-      { success: false, error: error.message },
+      { success: false, error: message },
       { status: 500 },
     );
   }

@@ -1,7 +1,8 @@
 'use client';
-import { showSuccess, showError, showConfirm, showToast } from '@/lib/sweetalert';
 
-import { useState, useEffect } from 'react';
+import { showSuccess, showError, showConfirm } from '@/lib/sweetalert';
+
+import { useState, useEffect, useCallback } from 'react';
 import {
   Plus,
   Pencil,
@@ -24,12 +25,14 @@ interface Agent {
   updatedAt: string;
   stats: {
     currentMonth: {
-      total: number;
+      total: number; // commission
       count: number;
+      owed: number; // what agent owes admin
     };
     allTime: {
-      total: number;
+      total: number; // commission
       count: number;
+      owed: number; // what agent owes admin
     };
   };
 }
@@ -38,20 +41,23 @@ interface MonthlyHistory {
   year: number;
   month: number;
   monthName: string;
-  total: number;
+  total: number; // commission
+  totalOwed: number; // what agent owes admin
   count: number;
 }
 
 interface MonthDetail {
   month: number;
   year: number;
-  total: number;
+  total: number; // commission
+  totalOwed: number; // what agent owes admin
   count: number;
   sales: {
     id: string;
     voucherCode: string;
     profileName: string;
     amount: number;
+    costPrice: number;
     createdAt: string;
   }[];
 }
@@ -62,13 +68,12 @@ export default function AgentPage() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
   const [deleteAgentId, setDeleteAgentId] = useState<string | null>(null);
-  
-  // Get current month name
-  const currentMonthName = new Date().toLocaleDateString('id-ID', {
+
+  const currentMonthName = new Date().toLocaleDateString('en-US', {
     month: 'long',
     year: 'numeric',
   });
-  
+
   // History modal states
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
@@ -83,13 +88,10 @@ export default function AgentPage() {
     address: '',
   });
 
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  const loadData = async () => {
+  // FIX: Wrap loadData in useCallback to fix "accessed before declared" error
+  const loadData = useCallback(async () => {
     try {
-      const res = await fetch('/api/hotspot/agents');
+      const res = await fetch('/api/hotspot/agents', { cache: 'no-store' });
       const data = await res.json();
       setAgents(data.agents || []);
     } catch (error) {
@@ -97,7 +99,12 @@ export default function AgentPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    // eslint-disable-next-line 
+    loadData();
+  }, [loadData]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -147,7 +154,7 @@ export default function AgentPage() {
 
   const handleDelete = async () => {
     if (!deleteAgentId) return;
-    
+
     const confirmed = await showConfirm('Are you sure you want to delete this agent?');
     if (!confirmed) {
       setDeleteAgentId(null);
@@ -189,7 +196,9 @@ export default function AgentPage() {
     setLoadingHistory(true);
 
     try {
-      const res = await fetch(`/api/hotspot/agents/${agent.id}/history`);
+      const res = await fetch(`/api/hotspot/agents/${agent.id}/history`, {
+        cache: 'no-store',
+      });
       const data = await res.json();
       setMonthlyHistory(data.history || []);
     } catch (error) {
@@ -205,7 +214,8 @@ export default function AgentPage() {
     setLoadingHistory(true);
     try {
       const res = await fetch(
-        `/api/hotspot/agents/${selectedAgent.id}/history?year=${year}&month=${month}`
+        `/api/hotspot/agents/${selectedAgent.id}/history?year=${year}&month=${month}`,
+        { cache: 'no-store' }
       );
       const data = await res.json();
       setSelectedMonthDetail(data);
@@ -217,7 +227,7 @@ export default function AgentPage() {
   };
 
   const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat('id-ID', {
+    return new Intl.NumberFormat('en-TZ', {
       style: 'currency',
       currency: 'TZS',
       minimumFractionDigits: 0,
@@ -225,7 +235,7 @@ export default function AgentPage() {
   };
 
   const formatDate = (date: string) => {
-    return new Date(date).toLocaleDateString('id-ID', {
+    return new Date(date).toLocaleDateString('en-US', {
       day: '2-digit',
       month: 'short',
       year: 'numeric',
@@ -282,9 +292,11 @@ export default function AgentPage() {
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm text-gray-600 dark:text-gray-400">Active Agents</p>
-              <p className="text-2xl font-bold mt-1">
-                {agents.filter((a) => a.isActive).length}
+              <p className="text-sm text-gray-600 dark:text-gray-400">Total Commissions</p>
+              <p className="text-2xl font-bold mt-1 text-green-600">
+                {formatCurrency(
+                  agents.reduce((sum, a) => sum + a.stats.allTime.total, 0)
+                )}
               </p>
             </div>
             <TrendingUp className="h-8 w-8 text-green-600" />
@@ -294,14 +306,14 @@ export default function AgentPage() {
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm text-gray-600 dark:text-gray-400">Total Sales (All Time)</p>
-              <p className="text-2xl font-bold mt-1">
+              <p className="text-sm text-gray-600 dark:text-gray-400">Total Owed to Admin</p>
+              <p className="text-2xl font-bold mt-1 text-red-600">
                 {formatCurrency(
-                  agents.reduce((sum, a) => sum + a.stats.allTime.total, 0)
+                  agents.reduce((sum, a) => sum + a.stats.allTime.owed, 0)
                 )}
               </p>
             </div>
-            <Calendar className="h-8 w-8 text-purple-600" />
+            <Calendar className="h-8 w-8 text-red-600" />
           </div>
         </div>
       </div>
@@ -361,21 +373,39 @@ export default function AgentPage() {
                     </td>
                     <td className="px-6 py-4 text-sm">{agent.phone}</td>
                     <td className="px-6 py-4">
-                      <div>
-                        <p className="font-medium text-sm">
-                          {formatCurrency(agent.stats.currentMonth.total)}
-                        </p>
-                        <p className="text-xs text-gray-500">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="text-gray-500 w-16">Commission:</span>
+                          <span className="font-medium text-green-600">
+                            {formatCurrency(agent.stats.currentMonth.total)}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="text-gray-500 w-16">Owed:</span>
+                          <span className="font-medium text-red-600">
+                            {formatCurrency(agent.stats.currentMonth.owed)}
+                          </span>
+                        </div>
+                        <p className="text-xs text-gray-400 pt-1">
                           {agent.stats.currentMonth.count} vouchers
                         </p>
                       </div>
                     </td>
                     <td className="px-6 py-4">
-                      <div>
-                        <p className="font-medium text-sm">
-                          {formatCurrency(agent.stats.allTime.total)}
-                        </p>
-                        <p className="text-xs text-gray-500">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="text-gray-500 w-16">Commission:</span>
+                          <span className="font-medium text-green-600">
+                            {formatCurrency(agent.stats.allTime.total)}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="text-gray-500 w-16">Owed:</span>
+                          <span className="font-medium text-red-600">
+                            {formatCurrency(agent.stats.allTime.owed)}
+                          </span>
+                        </div>
+                        <p className="text-xs text-gray-400 pt-1">
                           {agent.stats.allTime.count} vouchers
                         </p>
                       </div>
@@ -568,20 +598,26 @@ export default function AgentPage() {
                   <div className="bg-gray-50 dark:bg-gray-900 rounded-lg p-4 mb-4">
                     <p className="text-lg font-semibold">
                       {new Date(selectedMonthDetail.year, selectedMonthDetail.month).toLocaleString(
-                        'id-ID',
+                        'en-US',
                         { month: 'long', year: 'numeric' }
                       )}
                     </p>
-                    <div className="mt-2 grid grid-cols-2 gap-4">
+                    <div className="mt-3 grid grid-cols-3 gap-4">
                       <div>
-                        <p className="text-sm text-gray-600 dark:text-gray-400">Total Sales</p>
-                        <p className="text-xl font-bold">
+                        <p className="text-xs text-gray-600 dark:text-gray-400">Commission Earned</p>
+                        <p className="text-lg font-bold text-green-600">
                           {formatCurrency(selectedMonthDetail.total)}
                         </p>
                       </div>
                       <div>
-                        <p className="text-sm text-gray-600 dark:text-gray-400">Vouchers Sold</p>
-                        <p className="text-xl font-bold">{selectedMonthDetail.count}</p>
+                        <p className="text-xs text-gray-600 dark:text-gray-400">Owed to Admin</p>
+                        <p className="text-lg font-bold text-red-600">
+                          {formatCurrency(selectedMonthDetail.totalOwed)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-600 dark:text-gray-400">Vouchers Sold</p>
+                        <p className="text-lg font-bold">{selectedMonthDetail.count}</p>
                       </div>
                     </div>
                   </div>
@@ -600,9 +636,14 @@ export default function AgentPage() {
                               {formatDate(sale.createdAt)}
                             </p>
                           </div>
-                          <p className="font-semibold text-green-600">
-                            {formatCurrency(sale.amount)}
-                          </p>
+                          <div className="text-right">
+                            <p className="font-semibold text-green-600 text-sm">
+                              +{formatCurrency(sale.amount)}
+                            </p>
+                            <p className="text-xs text-red-500 mt-1">
+                              Owed: {formatCurrency(sale.costPrice)}
+                            </p>
+                          </div>
                         </div>
                       </div>
                     ))}
@@ -626,7 +667,10 @@ export default function AgentPage() {
                           </div>
                           <div className="text-right">
                             <p className="font-semibold text-green-600">
-                              {formatCurrency(month.total)}
+                              +{formatCurrency(month.total)}
+                            </p>
+                            <p className="text-xs text-red-500 mt-1">
+                              Owed: {formatCurrency(month.totalOwed)}
                             </p>
                             <Eye className="h-4 w-4 text-gray-400 ml-auto mt-1" />
                           </div>

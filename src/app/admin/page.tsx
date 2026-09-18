@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import {
   Users,
   Wifi,
@@ -16,6 +16,10 @@ import {
   CheckCircle2,
   XCircle,
   RotateCw,
+  UserCheck,
+  Ticket,
+  Wallet,
+  Banknote,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import Swal from 'sweetalert2';
@@ -42,6 +46,26 @@ interface DashboardData {
     hotspotSessions: number;
     bandwidth: string;
   };
+  agents: {
+    total: number;
+    active: number;
+    grossOwed: number;
+    paid: number;
+    outstanding: number;
+  };
+  sales: {
+    totalVouchers: number;
+    agentVouchers: number;
+    directVouchers: number;
+    currentMonthVouchers: number;
+    todayVouchers: number;
+  };
+  revenueBreakdown: {
+    transactionIncome: number;
+    agentPaid: number;
+    directVoucherSales: number;
+    total: number;
+  };
   activities: RecentActivity[];
   systemStatus?: {
     radius: boolean;
@@ -64,39 +88,18 @@ interface RecentActivity {
 }
 
 export default function AdminDashboard() {
-  const [mounted, setMounted] = useState(false);
   const tzInfo = getTimezoneInfo();
-  const [currentTime, setCurrentTime] = useState('');
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [radiusStatus, setRadiusStatus] = useState<RadiusStatus | null>(null);
   const [restarting, setRestarting] = useState(false);
+  const [currentTime, setCurrentTime] = useState(() =>
+    formatNairobi(new Date(), 'HH:mm:ss')
+  );
 
-  useEffect(() => {
-    setMounted(true);
-    loadDashboardData();
-    loadRadiusStatus();
-    setCurrentTime(formatNairobi(new Date(), 'HH:mm:ss'));
-    
-    const timeInterval = setInterval(() => {
-      setCurrentTime(formatNairobi(new Date(), 'HH:mm:ss'));
-    }, 1000);
-
-    // Refresh data every 30 seconds
-    const dataInterval = setInterval(() => {
-      loadDashboardData();
-      loadRadiusStatus();
-    }, 30000);
-
-    return () => {
-      clearInterval(timeInterval);
-      clearInterval(dataInterval);
-    };
-  }, []);
-
-  const loadDashboardData = async () => {
+  const loadDashboardData = useCallback(async () => {
     try {
-      const res = await fetch('/api/dashboard/stats');
+      const res = await fetch('/api/dashboard/stats', { cache: 'no-store' });
       const data = await res.json();
       if (data.success) {
         setDashboardData(data);
@@ -106,11 +109,11 @@ export default function AdminDashboard() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  const loadRadiusStatus = async () => {
+  const loadRadiusStatus = useCallback(async () => {
     try {
-      const res = await fetch('/api/system/radius');
+      const res = await fetch('/api/system/radius', { cache: 'no-store' });
       const data = await res.json();
       if (data.success) {
         setRadiusStatus(data);
@@ -118,7 +121,28 @@ export default function AdminDashboard() {
     } catch (error) {
       console.error('Failed to load RADIUS status:', error);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadDashboardData();
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadRadiusStatus();
+
+    const timeInterval = setInterval(() => {
+      setCurrentTime(formatNairobi(new Date(), 'HH:mm:ss'));
+    }, 1000);
+
+    const dataInterval = setInterval(() => {
+      loadDashboardData();
+      loadRadiusStatus();
+    }, 30000);
+
+    return () => {
+      clearInterval(timeInterval);
+      clearInterval(dataInterval);
+    };
+  }, [loadDashboardData, loadRadiusStatus]);
 
   const handleRestartRadius = async () => {
     const result = await Swal.fire({
@@ -157,41 +181,21 @@ export default function AdminDashboard() {
     }
   };
 
+  const formatCurrency = (amount: number) => {
+    return new Intl.NumberFormat('en-TZ', {
+      style: 'currency',
+      currency: 'TZS',
+      minimumFractionDigits: 0,
+    }).format(amount);
+  };
+
   const getStats = (): StatCard[] => {
     if (!dashboardData) {
       return [
-        {
-          title: 'Total Users',
-          value: '-',
-          change: null,
-          icon: <Users className="w-6 h-6" />,
-          bgColor: 'bg-blue-50 dark:bg-blue-900/20',
-          iconColor: 'text-blue-600 dark:text-blue-400',
-        },
-        {
-          title: 'Active Sessions',
-          value: '-',
-          change: null,
-          icon: <Activity className="w-6 h-6" />,
-          bgColor: 'bg-green-50 dark:bg-green-900/20',
-          iconColor: 'text-green-600 dark:text-green-400',
-        },
-        {
-          title: 'Pending Invoices',
-          value: '-',
-          change: null,
-          icon: <Receipt className="w-6 h-6" />,
-          bgColor: 'bg-yellow-50 dark:bg-yellow-900/20',
-          iconColor: 'text-yellow-600 dark:text-yellow-400',
-        },
-        {
-          title: 'Revenue',
-          value: '-',
-          change: null,
-          icon: <DollarSign className="w-6 h-6" />,
-          bgColor: 'bg-purple-50 dark:bg-purple-900/20',
-          iconColor: 'text-purple-600 dark:text-purple-400',
-        },
+        { title: 'Total Users', value: '-', change: null, icon: <Users className="w-6 h-6" />, bgColor: 'bg-blue-50 dark:bg-blue-900/20', iconColor: 'text-blue-600 dark:text-blue-400' },
+        { title: 'Active Sessions', value: '-', change: null, icon: <Activity className="w-6 h-6" />, bgColor: 'bg-green-50 dark:bg-green-900/20', iconColor: 'text-green-600 dark:text-green-400' },
+        { title: 'Pending Invoices', value: '-', change: null, icon: <Receipt className="w-6 h-6" />, bgColor: 'bg-yellow-50 dark:bg-yellow-900/20', iconColor: 'text-yellow-600 dark:text-yellow-400' },
+        { title: 'Revenue', value: '-', change: null, icon: <DollarSign className="w-6 h-6" />, bgColor: 'bg-purple-50 dark:bg-purple-900/20', iconColor: 'text-purple-600 dark:text-purple-400' },
       ];
     }
 
@@ -246,7 +250,7 @@ export default function AdminDashboard() {
         </div>
       </div>
 
-      {/* Stats Grid */}
+      {/* Top Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         {loading ? (
           <div className="col-span-full flex items-center justify-center py-12">
@@ -254,41 +258,209 @@ export default function AdminDashboard() {
           </div>
         ) : (
           getStats().map((stat) => (
-          <div
-            key={stat.title}
-            className="group relative bg-white/60 dark:bg-gray-950/60 backdrop-blur-xl rounded-2xl border border-gray-200/50 dark:border-gray-800/50 p-6 hover:shadow-xl hover:shadow-gray-200/50 dark:hover:shadow-gray-900/50 transition-all duration-300 hover:-translate-y-1"
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex-1">
-                <p className="text-sm font-medium text-gray-600 dark:text-gray-400">
-                  {stat.title}
-                </p>
-                <p className="text-2xl font-bold text-gray-900 dark:text-white mt-2">
-                  {stat.value}
-                </p>
-                {stat.change && (
-                  <p
-                    className={`text-xs font-medium mt-2 ${
-                      stat.change.startsWith('+')
-                        ? 'text-green-600'
-                        : 'text-red-600'
-                    }`}
-                  >
-                    {stat.change} from last month
+            <div
+              key={stat.title}
+              className="group relative bg-white/60 dark:bg-gray-950/60 backdrop-blur-xl rounded-2xl border border-gray-200/50 dark:border-gray-800/50 p-6 hover:shadow-xl hover:shadow-gray-200/50 dark:hover:shadow-gray-900/50 transition-all duration-300 hover:-translate-y-1"
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-gray-600 dark:text-gray-400">
+                    {stat.title}
                   </p>
-                )}
-              </div>
-              <div
-                className={`${stat.bgColor} ${stat.iconColor} p-3.5 rounded-xl shadow-lg group-hover:scale-110 transition-transform duration-300`}
-              >
-                {stat.icon}
+                  <p className="text-2xl font-bold text-gray-900 dark:text-white mt-2">
+                    {stat.value}
+                  </p>
+                  {stat.change && (
+                    <p
+                      className={`text-xs font-medium mt-2 ${
+                        stat.change.startsWith('+') ? 'text-green-600' : 'text-red-600'
+                      }`}
+                    >
+                      {stat.change} from last month
+                    </p>
+                  )}
+                </div>
+                <div
+                  className={`${stat.bgColor} ${stat.iconColor} p-3.5 rounded-xl shadow-lg group-hover:scale-110 transition-transform duration-300`}
+                >
+                  {stat.icon}
+                </div>
               </div>
             </div>
-          </div>
           ))
         )}
       </div>
 
+      {/* ========== BUSINESS OVERVIEW (NEW) ========== */}
+      {dashboardData && (
+        <>
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+              Business Overview
+            </h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              {/* Agents */}
+              <div className="bg-white/60 dark:bg-gray-950/60 backdrop-blur-xl rounded-2xl border border-gray-200/50 dark:border-gray-800/50 p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Agents</p>
+                    <p className="text-2xl font-bold text-gray-900 dark:text-white mt-2">
+                      {dashboardData.agents.total}
+                    </p>
+                    <p className="text-xs text-green-600 mt-2">
+                      {dashboardData.agents.active} active
+                    </p>
+                  </div>
+                  <div className="bg-indigo-50 dark:bg-indigo-900/20 p-3.5 rounded-xl">
+                    <UserCheck className="w-6 h-6 text-indigo-600 dark:text-indigo-400" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Vouchers Sold */}
+              <div className="bg-white/60 dark:bg-gray-950/60 backdrop-blur-xl rounded-2xl border border-gray-200/50 dark:border-gray-800/50 p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Vouchers Sold</p>
+                    <p className="text-2xl font-bold text-gray-900 dark:text-white mt-2">
+                      {dashboardData.sales.totalVouchers.toLocaleString()}
+                    </p>
+                    <p className="text-xs text-gray-500 mt-2">
+                      {dashboardData.sales.todayVouchers} today • {dashboardData.sales.currentMonthVouchers} this month
+                    </p>
+                  </div>
+                  <div className="bg-purple-50 dark:bg-purple-900/20 p-3.5 rounded-xl">
+                    <Ticket className="w-6 h-6 text-purple-600 dark:text-purple-400" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Money Owed by Agents - Changed to BLUE */}
+              <div className="bg-white/60 dark:bg-gray-950/60 backdrop-blur-xl rounded-2xl border border-gray-200/50 dark:border-gray-800/50 p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Owed by Agents</p>
+                    <p className="text-2xl font-bold text-blue-600 mt-2">
+                      {formatCurrency(dashboardData.agents.outstanding)}
+                    </p>
+                    <p className="text-xs text-gray-500 mt-2">
+                      Gross {formatCurrency(dashboardData.agents.grossOwed)}
+                    </p>
+                  </div>
+                  <div className="bg-blue-50 dark:bg-blue-900/20 p-3.5 rounded-xl">
+                    <Wallet className="w-6 h-6 text-blue-600 dark:text-blue-400" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Money Paid by Agents */}
+              <div className="bg-white/60 dark:bg-gray-950/60 backdrop-blur-xl rounded-2xl border border-gray-200/50 dark:border-gray-800/50 p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Paid by Agents</p>
+                    <p className="text-2xl font-bold text-green-600 mt-2">
+                      {formatCurrency(dashboardData.agents.paid)}
+                    </p>
+                    <p className="text-xs text-gray-500 mt-2">
+                      All-time deposits
+                    </p>
+                  </div>
+                  <div className="bg-green-50 dark:bg-green-900/20 p-3.5 rounded-xl">
+                    <Banknote className="w-6 h-6 text-green-600 dark:text-green-400" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* ========== REVENUE BREAKDOWN ========== */}
+          <div className="bg-white/60 dark:bg-gray-950/60 backdrop-blur-xl rounded-2xl border border-gray-200/50 dark:border-gray-800/50 p-6 shadow-xl">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+                  Total Revenue Breakdown
+                </h2>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  Combined revenue from all sources (all time)
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-xs text-gray-500 dark:text-gray-400">Total Collected</p>
+                <p className="text-2xl font-bold bg-gradient-to-r from-green-600 to-emerald-600 bg-clip-text text-transparent">
+                  {formatCurrency(dashboardData.revenueBreakdown.total)}
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {/* Other Income */}
+              <div className="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-xl border border-blue-200/50 dark:border-blue-800/30">
+                <div className="flex items-center gap-3 mb-2">
+                  <DollarSign className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                  <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Other Income
+                  </p>
+                </div>
+                <p className="text-xl font-bold text-gray-900 dark:text-white">
+                  {formatCurrency(dashboardData.revenueBreakdown.transactionIncome)}
+                </p>
+                <p className="text-xs text-gray-500 mt-1">
+                  PPPoE, installation, misc.
+                </p>
+              </div>
+
+              {/* Agent Payments */}
+              <div className="p-4 bg-green-50 dark:bg-green-900/20 rounded-xl border border-green-200/50 dark:border-green-800/30">
+                <div className="flex items-center gap-3 mb-2">
+                  <Banknote className="w-5 h-5 text-green-600 dark:text-green-400" />
+                  <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Agent Payments
+                  </p>
+                </div>
+                <p className="text-xl font-bold text-gray-900 dark:text-white">
+                  {formatCurrency(dashboardData.revenueBreakdown.agentPaid)}
+                </p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Deposits from agents
+                </p>
+              </div>
+
+              {/* Direct Voucher Sales */}
+              <div className="p-4 bg-purple-50 dark:bg-purple-900/20 rounded-xl border border-purple-200/50 dark:border-purple-800/30">
+                <div className="flex items-center gap-3 mb-2">
+                  <Ticket className="w-5 h-5 text-purple-600 dark:text-purple-400" />
+                  <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Direct Voucher Sales
+                  </p>
+                </div>
+                <p className="text-xl font-bold text-gray-900 dark:text-white">
+                  {formatCurrency(dashboardData.revenueBreakdown.directVoucherSales)}
+                </p>
+                <p className="text-xs text-gray-500 mt-1">
+                  {dashboardData.sales.directVouchers} e-vouchers sold
+                </p>
+              </div>
+            </div>
+
+            {/* Pending collection note - Changed to BLUE */}
+            {dashboardData.agents.outstanding > 0 && (
+              <div className="mt-4 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200/50 dark:border-blue-800/30 rounded-lg flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Wallet className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                  <p className="text-sm text-blue-800 dark:text-blue-300">
+                    Pending collection from agents
+                  </p>
+                </div>
+                <p className="text-sm font-bold text-blue-800 dark:text-blue-300">
+                  + {formatCurrency(dashboardData.agents.outstanding)}
+                </p>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Existing Network Overview + Recent Activities */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Recent Activities */}
         <div className="bg-white/60 dark:bg-gray-950/60 backdrop-blur-xl rounded-2xl border border-gray-200/50 dark:border-gray-800/50 p-6 shadow-xl">
@@ -303,41 +475,41 @@ export default function AdminDashboard() {
               </div>
             ) : (
               dashboardData.activities.map((activity) => (
-              <div
-                key={activity.id}
-                className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-900 rounded-lg"
-              >
-                <div className="flex-1">
-                  <p className="text-sm font-medium text-gray-900 dark:text-white">
-                    {activity.user}
-                  </p>
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                    {activity.action}
-                  </p>
+                <div
+                  key={activity.id}
+                  className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-900 rounded-lg"
+                >
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-gray-900 dark:text-white">
+                      {activity.user}
+                    </p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      {activity.action}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      {formatNairobi(activity.time, 'HH:mm')}
+                    </p>
+                    <span
+                      className={`inline-block px-2 py-1 text-xs font-medium rounded mt-1 ${
+                        activity.status === 'success'
+                          ? 'bg-green-100 text-green-700 dark:bg-green-900/20 dark:text-green-400'
+                          : activity.status === 'warning'
+                          ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/20 dark:text-yellow-400'
+                          : 'bg-red-100 text-red-700 dark:bg-red-900/20 dark:text-red-400'
+                      }`}
+                    >
+                      {activity.status}
+                    </span>
+                  </div>
                 </div>
-                <div className="text-right">
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
-                    {formatNairobi(activity.time, 'HH:mm')}
-                  </p>
-                  <span
-                    className={`inline-block px-2 py-1 text-xs font-medium rounded mt-1 ${
-                      activity.status === 'success'
-                        ? 'bg-green-100 text-green-700 dark:bg-green-900/20 dark:text-green-400'
-                        : activity.status === 'warning'
-                        ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/20 dark:text-yellow-400'
-                        : 'bg-red-100 text-red-700 dark:bg-red-900/20 dark:text-red-400'
-                    }`}
-                  >
-                    {activity.status}
-                  </span>
-                </div>
-              </div>
               ))
             )}
           </div>
         </div>
 
-        {/* Quick Stats */}
+        {/* Network Overview */}
         <div className="bg-white/60 dark:bg-gray-950/60 backdrop-blur-xl rounded-2xl border border-gray-200/50 dark:border-gray-800/50 p-6 shadow-xl">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
             Network Overview
