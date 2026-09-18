@@ -1,8 +1,12 @@
+// src/components/MapPicker.tsx
 'use client';
 
 import { useState, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { X, Layers } from 'lucide-react';
+import { useMapEvents } from 'react-leaflet';
+import type { LeafletMouseEvent } from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 
 const MapContainer = dynamic(
   () => import('react-leaflet').then((mod) => mod.MapContainer),
@@ -16,10 +20,6 @@ const Marker = dynamic(
   () => import('react-leaflet').then((mod) => mod.Marker),
   { ssr: false }
 );
-const useMapEvents = dynamic(
-  () => import('react-leaflet').then((mod) => mod.useMapEvents),
-  { ssr: false }
-);
 
 interface MapPickerProps {
   isOpen: boolean;
@@ -29,10 +29,13 @@ interface MapPickerProps {
   initialLng?: number;
 }
 
-function LocationPicker({ setPosition }: { setPosition: (pos: [number, number]) => void }) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const map = (useMapEvents as any)({
-    click(e: any) {
+function LocationPicker({
+  setPosition,
+}: {
+  setPosition: (pos: [number, number]) => void;
+}) {
+  const map = useMapEvents({
+    click(e: LeafletMouseEvent) {
       setPosition([e.latlng.lat, e.latlng.lng]);
       map.flyTo(e.latlng, map.getZoom());
     },
@@ -47,30 +50,39 @@ export default function MapPicker({
   initialLat = -7.0712854057077745,
   initialLng = 108.04477186751905,
 }: MapPickerProps) {
-  const [position, setPosition] = useState<[number, number] | null>(null);
+  // ✅ Initialize directly from props — no setState in effect needed
+  const [position, setPosition] = useState<[number, number]>([
+    initialLat,
+    initialLng,
+  ]);
   const [basemap, setBasemap] = useState<'street' | 'satellite'>('street');
   const [mapReady, setMapReady] = useState(false);
 
-  // Initialize position and leaflet CSS/icons on open
+  // Effect only does side effects (load leaflet CSS + set icons)
   useEffect(() => {
-    if (isOpen) {
-      setPosition([initialLat, initialLng]);
-      import('leaflet/dist/leaflet.css');
-      import('leaflet').then((L) => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        delete (L.Icon.Default.prototype as any)._getIconUrl;
-        L.Icon.Default.mergeOptions({
-          iconRetinaUrl:
-            'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
-          iconUrl:
-            'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
-          shadowUrl:
-            'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
-        });
+    if (!isOpen) return;
+
+    let cancelled = false;
+
+    import('leaflet').then((L) => {
+      if (cancelled) return;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      delete (L.Icon.Default.prototype as any)._getIconUrl;
+      L.Icon.Default.mergeOptions({
+        iconRetinaUrl:
+          'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
+        iconUrl:
+          'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
+        shadowUrl:
+          'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
       });
       setMapReady(true);
-    }
-  }, [isOpen, initialLat, initialLng]);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
 
   const handleConfirm = () => {
     if (position) {
@@ -121,7 +133,7 @@ export default function MapPicker({
             </div>
             {mapReady && (
               <MapContainer
-                center={position ?? [initialLat, initialLng]}
+                center={position}
                 zoom={13}
                 style={{ height: '100%', width: '100%' }}
               >
@@ -143,7 +155,8 @@ export default function MapPicker({
           </div>
           {position && (
             <div className="mt-3 text-sm text-gray-600 dark:text-gray-400">
-              Selected coordinates: {position[0].toFixed(6)}, {position[1].toFixed(6)}
+              Selected coordinates: {position[0].toFixed(6)},{' '}
+              {position[1].toFixed(6)}
             </div>
           )}
           <p className="mt-2 text-sm text-gray-500">

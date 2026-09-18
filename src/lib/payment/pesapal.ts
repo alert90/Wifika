@@ -1,287 +1,205 @@
-import crypto from 'crypto'
+// src/lib/payment/pesapal.ts
+import axios from 'axios';
+import crypto from 'crypto';
 
-interface PesapalConfig {
-  merchantId: string;
+const PESAPAL_BASE_URL_SANDBOX = 'https://cybqa.pesapal.com/pesapalv3';
+const PESAPAL_BASE_URL_PRODUCTION = 'https://pay.pesapal.com/v3';
+
+/* ------------------------------------------------------------------ */
+/* Types                                                              */
+/* ------------------------------------------------------------------ */
+
+export interface PesapalConfig {
   apiKey: string;
   secretKey: string;
+  merchantId: string;
   environment: 'sandbox' | 'production';
 }
 
-interface PesapalPaymentParams {
+interface PesapalRequestParams {
+  merchant_id: string;
+  order_id: string;
+  timestamp: string;
+  amount?: string;
+  [key: string]: string | undefined;
+}
+
+interface AuthResponse {
+  token: string;
+  expiryDate: string;
+  error?: { message: string };
+  status: string;
+}
+
+interface SubmitOrderResponse {
+  order_tracking_id: string;
+  merchant_reference: string;
+  redirect_url: string;
+  error?: { message: string };
+  status: string;
+}
+
+interface SubmitOrderParams {
   orderId: string;
   amount: number;
-  phoneNumber: string;
   description: string;
-  customerName?: string;
-  email?: string;
+  callbackUrl: string;
+  customerEmail?: string;
+  customerPhone?: string;
 }
 
-interface PesapalPaymentResponse {
-  success: boolean;
-  reference?: string;
-  paymentUrl?: string;
-  message?: string;
-}
+/* ------------------------------------------------------------------ */
+/* Helpers                                                            */
+/* ------------------------------------------------------------------ */
 
-interface PesapalStatusResponse {
-  success: boolean;
-  status?: string;
-  reference?: string;
-  amount?: number;
-  message?: string;
-}
-
-export class PesapalPayment {
-  private config: PesapalConfig;
-  private baseUrl: string;
-
-  constructor(config: PesapalConfig) {
-    this.config = config;
-    this.baseUrl = config.environment === 'production'
-      ? 'https://api.pesapal.com'
-      : 'https://sandbox.pesapal.com';
-  }
-
-  /**
-   * Generate signature for Pesapal API
-   */
-  private generateSignature(params: Record<string, string>): string {
-    // Sort parameters alphabetically
-    const sortedKeys = Object.keys(params).sort();
-    let queryString = '';
-    
-    sortedKeys.forEach(key => {
-      if (queryString) queryString += '&';
-      queryString += `${key}=${params[key]}`;
-    });
-    
-    // Remove leading '&'
-    queryString = queryString.substring(1);
-    
-    // Append secret key
-    const signatureString = `${queryString}&${this.config.secretKey}`;
-    
-    return crypto.createHash('sha256').update(signatureString).digest('hex');
-  }
-
-  /**
-   * Create payment request
-   */
-  async createPayment(params: PesapalPaymentParams): Promise<PesapalPaymentResponse> {
-    const timestamp = Math.floor(Date.now() / 1000).toString();
-    
-    const requestParams = {
-      merchant_id: this.config.merchantId,
-      order_id: params.orderId,
-      amount: params.amount.toString(),
-      currency: 'TZS',
-      customer_name: params.customerName || 'Customer',
-      customer_email: params.email || 'customer@example.com',
-      customer_phone: params.phoneNumber,
-      payment_method: 'MOBILE',
-      redirect_url: `${process.env.NEXT_PUBLIC_APP_URL}/payment/success?token=${params.orderId}`,
-      cancel_url: `${process.env.NEXT_PUBLIC_APP_URL}/payment/failed?token=${params.orderId}`,
-      callback_url: `${process.env.NEXT_PUBLIC_APP_URL}/api/payment/webhook`,
-      description: params.description,
-      timestamp: timestamp
-    };
-
-    const signature = this.generateSignature(requestParams);
-
-    try {
-      const response = await fetch(`${this.baseUrl}/v1/payment/create`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': this.config.apiKey,
-          'X-Signature': signature
-        },
-        body: JSON.stringify(requestParams)
-      });
-
-      const data = await response.json();
-      
-      console.log('[Pesapal] Payment Response:', JSON.stringify(data, null, 2));
-      
-      return data;
-    } catch (error) {
-      console.error('Pesapal payment error:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Check payment status
-   */
-  async checkPaymentStatus(orderId: string): Promise<PesapalStatusResponse> {
-    const timestamp = Math.floor(Date.now() / 1000).toString();
-    
-    const requestParams = {
-      merchant_id: this.config.merchantId,
-      order_id: orderId,
-      timestamp: timestamp
-    };
-
-    const signature = this.generateSignature(requestParams);
-
-    try {
-      const response = await fetch(`${this.baseUrl}/v1/payment/status`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': this.config.apiKey,
-          'X-Signature': signature
-        },
-        body: JSON.stringify(requestParams)
-      });
-
-      const data = await response.json();
-      
-      console.log('[Pesapal] Status Check Response:', JSON.stringify(data, null, 2));
-      
-      return data;
-    } catch (error) {
-      console.error('Pesapal status check error:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Validate Pesapal webhook signature
-   */
-  public validateWebhookSignature(
-    timestamp: string,
-    signature: string,
-    params: Record<string, string>
-  ): boolean {
-    // Add secret key to params for signature validation
-    const paramsWithSecret = { ...params, secret_key: this.config.secretKey };
-    
-    const expectedSignature = this.generateSignature(paramsWithSecret);
-    return expectedSignature === signature;
-  }
-
-  /**
-   * Parse Pesapal webhook body
-   */
-  public parseWebhookBody(body: any): {
-    success: boolean;
-    orderId?: string;
-    transactionId?: string;
-    amount?: number;
-    phoneNumber?: string;
-    status?: string;
-  } {
-    // Handle Pesapal webhook format
-    if (body.order_id && body.status) {
-      const isCompleted = body.status === 'completed';
-      
-      return {
-        success: isCompleted,
-        orderId: body.order_id,
-        transactionId: body.transaction_id,
-        amount: parseFloat(body.amount) || 0,
-        phoneNumber: body.customer_phone,
-        status: body.status
-      };
-    }
-
-    return {
-      success: false
-    };
-  }
-
-  /**
-   * Verify payment from webhook
-   */
-  async verifyPayment(orderId: string): Promise<PesapalStatusResponse> {
-    try {
-      const response = await this.checkPaymentStatus(orderId);
-      
-      if (response.status === 'completed') {
-        return {
-          ...response,
-          success: true,
-          message: 'Payment completed successfully'
-        };
-      }
-      
-      return {
-        ...response,
-        success: false,
-        message: 'Payment not completed'
-      };
-    } catch (error) {
-      console.error('Pesapal payment verification error:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Refund payment
-   */
-  async refundPayment(orderId: string, amount?: number): Promise<any> {
-    const timestamp = Math.floor(Date.now() / 1000).toString();
-    
-    const requestParams = {
-      merchant_id: this.config.merchantId,
-      order_id: orderId,
-      timestamp: timestamp
-    };
-
-    if (amount) {
-      requestParams.amount = amount.toString();
-    }
-
-    const signature = this.generateSignature(requestParams);
-
-    try {
-      const response = await fetch(`${this.baseUrl}/v1/payment/refund`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': this.config.apiKey,
-          'X-Signature': signature
-        },
-        body: JSON.stringify(requestParams)
-      });
-
-      const data = await response.json();
-      
-      console.log('[Pesapal] Refund Response:', JSON.stringify(data, null, 2));
-      
-      return data;
-    } catch (error) {
-      console.error('Pesapal refund error:', error);
-      throw error;
-    }
-  }
+function getBaseUrl(environment: 'sandbox' | 'production'): string {
+  return environment === 'sandbox'
+    ? PESAPAL_BASE_URL_SANDBOX
+    : PESAPAL_BASE_URL_PRODUCTION;
 }
 
 /**
- * Helper function to initialize Pesapal
- */
-export function createPesapalClient(config: PesapalConfig): PesapalPayment {
-  return new PesapalPayment(config);
-}
-
-/**
- * Format phone number for Pesapal (ensure proper format)
+ * Normalize phone number to international format for Pesapal.
+ * Strips non-digits, ensures it starts with 255 (Tanzania).
  */
 export function formatPhoneNumberForPesapal(phone: string): string {
-  // Remove all non-digit characters
-  let cleanedPhone = phone.replace(/\D/g, '');
-  
-  // Remove leading 255 if present, then add it
-  if (cleanedPhone.startsWith('255')) {
-    cleanedPhone = cleanedPhone.substring(3);
+  let clean = phone.replace(/\D/g, '');
+  if (clean.startsWith('0')) clean = '255' + clean.slice(1);
+  if (!clean.startsWith('255')) clean = '255' + clean;
+  return clean;
+}
+
+async function getAccessToken(config: PesapalConfig): Promise<string> {
+  const baseUrl = getBaseUrl(config.environment);
+
+  const res = await axios.post<AuthResponse>(
+    `${baseUrl}/api/Auth/RequestToken`,
+    {
+      consumer_key: config.apiKey,
+      consumer_secret: config.secretKey,
+    },
+    {
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+    }
+  );
+
+  if (!res.data.token) {
+    throw new Error(
+      res.data.error?.message || 'Failed to get Pesapal access token'
+    );
   }
-  
-  // Remove leading 0 if present
-  if (cleanedPhone.startsWith('0')) {
-    cleanedPhone = cleanedPhone.substring(1);
+
+  return res.data.token;
+}
+
+/* ------------------------------------------------------------------ */
+/* Core API functions                                                 */
+/* ------------------------------------------------------------------ */
+
+export async function createPesapalOrder(
+  config: PesapalConfig,
+  params: SubmitOrderParams
+): Promise<SubmitOrderResponse> {
+  const token = await getAccessToken(config);
+  const baseUrl = getBaseUrl(config.environment);
+  const now = new Date().toISOString();
+
+  // Build request params — includes amount via typed interface
+  const requestParams: PesapalRequestParams = {
+    merchant_id: config.merchantId,
+    order_id: params.orderId,
+    timestamp: now,
+  };
+  requestParams.amount = params.amount.toString();
+
+  const res = await axios.post<SubmitOrderResponse>(
+    `${baseUrl}/api/Transactions/SubmitOrderRequest`,
+    {
+      id: params.orderId,
+      currency: 'TZS',
+      amount: params.amount,
+      description: params.description,
+      callback_url: params.callbackUrl,
+      notification_id: params.orderId,
+      billing_address: {
+        email_address: params.customerEmail || '',
+        phone_number: params.customerPhone
+          ? formatPhoneNumberForPesapal(params.customerPhone)
+          : '',
+        country_code: 'TZ',
+      },
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+    }
+  );
+
+  if (!res.data.redirect_url) {
+    throw new Error(
+      res.data.error?.message || 'Failed to create Pesapal order'
+    );
   }
-  
-  // Add 255 prefix
-  return `255${cleanedPhone}`;
+
+  return res.data;
+}
+
+export async function checkPesapalTransactionStatus(
+  config: PesapalConfig,
+  orderTrackingId: string
+): Promise<unknown> {
+  const token = await getAccessToken(config);
+  const baseUrl = getBaseUrl(config.environment);
+
+  const res = await axios.get(
+    `${baseUrl}/api/Transactions/GetTransactionStatus?orderTrackingId=${orderTrackingId}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+      },
+    }
+  );
+
+  return res.data;
+}
+
+export function verifyPesapalSignature(
+  orderTrackingId: string,
+  merchantReference: string,
+  amount: string,
+  secretKey: string
+): string {
+  const rawString = `${orderTrackingId}${merchantReference}${amount}`;
+  return crypto
+    .createHmac('sha256', secretKey)
+    .update(rawString)
+    .digest('base64');
+}
+
+/* ------------------------------------------------------------------ */
+/* Client factory — what the pesapal route imports                    */
+/* ------------------------------------------------------------------ */
+
+export interface PesapalClient {
+  submitOrder: (params: SubmitOrderParams) => Promise<SubmitOrderResponse>;
+  getTransactionStatus: (orderTrackingId: string) => Promise<unknown>;
+}
+
+/**
+ * Create a bound Pesapal client using the given credentials.
+ * The route imports this and calls `client.submitOrder(...)`.
+ */
+export function createPesapalClient(config: PesapalConfig): PesapalClient {
+  return {
+    submitOrder: (params) => createPesapalOrder(config, params),
+    getTransactionStatus: (orderTrackingId) =>
+      checkPesapalTransactionStatus(config, orderTrackingId),
+  };
 }

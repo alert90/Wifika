@@ -1,806 +1,619 @@
-'use client';
-
-import { useState, useEffect } from 'react';
+// app/api/payment/webhook/route.ts
+import { NextResponse } from 'next/server';
+import { prisma } from '@/lib/prisma';
+import { syncVoucherToRadius } from '@/lib/hotspot-radius-sync';
 import {
-  Database,
-  Download,
-  Upload,
-  RefreshCw,
-  Send,
-  Trash2,
-  HardDrive,
-  Activity,
-  Clock,
-  CheckCircle,
-  AlertCircle,
-  Shield,
-} from 'lucide-react';
-import { showSuccess, showError, showConfirm } from '@/lib/sweetalert';
-import { usePermissions } from '@/hooks/usePermissions';
-import { formatNairobi } from '@/lib/timezone';
+  sendPaymentSuccess,
+  sendVoucherPurchaseSuccess,
+} from '@/lib/whatsapp-notifications';
+import crypto from 'crypto';
+import { nanoid } from 'nanoid';
+import { formatCurrency } from '@/lib/utils';
 
-interface BackupHistory {
-  id: string;
-  filename: string;
-  filesize: number;
-  type: 'auto' | 'manual';
-  status: 'success' | 'failed';
-  method: string;
-  createdAt: string;
-  error?: string;
+export const dynamic = 'force-dynamic';
+
+interface WebhookPayload {
+  order_id?: string;
+  status?: string;
+  payment_status?: string;
+  transid?: string;
+  reference?: string;
+  amount?: string | number;
+  channel?: string;
+  transaction_id?: string;
+  anypay_payment_status?: string;
+  anypay_transid?: string;
+  anypay_amount?: string | number;
+  [key: string]: unknown;
 }
 
-interface DatabaseHealth {
-  status: 'healthy' | 'warning' | 'error';
-  size: string;
-  tables: number;
-  connections: string;
-  lastBackup: string | null;
-  uptime: string;
+interface WebhookBody {
+  Body?: {
+    stkCallback?: {
+      MerchantRequestID?: string;
+      ResultCode?: string;
+      CallbackMetadata?: {
+        Item?: Array<{ Name: string; Value?: string | number }>;
+      };
+    };
+  };
+  event?: string;
+  data?: WebhookPayload;
+  [key: string]: unknown;
 }
 
-interface TelegramSettings {
-  enabled: boolean;
-  botToken: string;
-  chatId: string;
-  backupTopicId: string;
-  healthTopicId: string;
-  schedule: string;
-  scheduleTime: string;
-  keepLastN: number;
+export async function POST(request: Request) {
+  let webhookLogId: string | undefined;
+  try {
+    const contentType = request.headers.get('content-type') || '';
+    let body: WebhookBody;
+
+    if (contentType.includes('application/x-www-form-urlencoded')) {
+      const formData = await request.text();
+      body = Object.fromEntries(new URLSearchParams(formData)) as WebhookBody;
+    } else {
+      body = (await request.json()) as WebhookBody;
+    }
+
+    console.log('=== PAYMENT WEBHOOK RECEIVED ===');
+    console.log('Timestamp:', new Date().toISOString());
+    console.log('Content-Type:', contentType);
+    console.log('Raw Body:', JSON.stringify(body, null, 2));
+
+    const payload: WebhookPayload =
+      body && body.event && body.data ? body.data : (body as WebhookPayload);
+
+    let gateway = 'unknown';
+    let orderId = '';
+    let status = '';
+    let transactionId = '';
+    let paymentType = '';
+    let paidAt: Date | null = null;
+    let amount: number | undefined;
+
+    // MPESA
+    if (body.Body && body.Body.stkCallback) {
+      gateway = 'mpesa';
+      const callback = body.Body.stkCallback;
+      orderId =
+        callback.CallbackMetadata?.Item?.find(
+          (item) => item.Name === 'AccountReference'
+        )?.Value?.toString() || '';
+      transactionId = callback.MerchantRequestID || '';
+      paymentType = 'stk_push';
+      if (callback.ResultCode === '0') {
+        status = 'settlement';
+        paidAt = new Date();
+        const amountItem = callback.CallbackMetadata?.Item?.find(
+          (item) => item.Name === 'Amount'
+        );
+        amount = amountItem?.Value ? parseInt(String(amountItem.Value)) : undefined;
+      } else {
+        status = 'failed';
+      }
+      console.log('[M-Pesa] Webhook processed');
+    }
+    // SELCOM
+    else if (payload.order_id && payload.payment_status) {
+      gateway = 'selcom';
+      orderId = payload.order_id;
+      transactionId = payload.transid || '';
+      paymentType = payload.channel || 'mobile_money';
+      amount = payload.amount ? parseInt(String(payload.amount)) : undefined;
+      if (payload.payment_status === 'COMPLETED') {
+        status = 'settlement';
+        paidAt = new Date();
+      } else if (payload.payment_status === 'PENDING') {
+        status = 'pending';
+      } else {
+        status = 'failed';
+      }
+      console.log('[Selcom] Webhook processed');
+    }
+    // PESAPAL
+    else if (payload.order_id && payload.status) {
+      gateway = 'pesapal';
+      orderId = payload.order_id;
+      transactionId = payload.transaction_id || '';
+      paymentType = 'mobile';
+      amount = payload.amount ? parseFloat(String(payload.amount)) : undefined;
+      if (payload.status === 'completed') {
+        status = 'settlement';
+        paidAt = new Date();
+      } else if (payload.status === 'pending') {
+        status = 'pending';
+      } else {
+        status = 'failed';
+      }
+      console.log('[Pesapal] Webhook processed');
+    }
+    // ANYPAY
+    else if (payload.order_id && (payload.status || payload.anypay_payment_status)) {
+      gateway = 'anypay';
+      orderId = payload.order_id;
+      transactionId =
+        payload.transid ||
+        payload.reference ||
+        payload.anypay_transid ||
+        '';
+      const amountRaw = payload.amount ?? payload.anypay_amount;
+      amount = amountRaw ? parseFloat(String(amountRaw)) : undefined;
+
+      const anypayStatus = (
+        payload.status ||
+        payload.anypay_payment_status ||
+        ''
+      ).toUpperCase();
+
+      if (anypayStatus === 'COMPLETED' || anypayStatus === 'SUCCESS') {
+        status = 'settlement';
+        paidAt = new Date();
+      } else if (anypayStatus === 'PENDING' || anypayStatus === 'PROCESSING') {
+        status = 'pending';
+      } else {
+        status = 'failed';
+      }
+
+      console.log('[AnyPay] Webhook processed:', {
+        orderId,
+        status,
+        transactionId,
+        amount,
+      });
+    } else {
+      console.log('Unknown webhook payload format. Returning 200 to avoid retries.');
+      return NextResponse.json({
+        success: true,
+        message: 'Webhook received but format unknown',
+      });
+    }
+
+    console.log(
+      `Processing: ${gateway.toUpperCase()} | Order: ${orderId} | Status: ${status}`
+    );
+
+    const existingLog = await prisma.webhookLog.findFirst({
+      where: { orderId },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (existingLog) {
+      const webhookLog = await prisma.webhookLog.update({
+        where: { id: existingLog.id },
+        data: {
+          gateway,
+          status,
+          transactionId,
+          amount,
+          payload: JSON.stringify(body),
+          success: true,
+        },
+      });
+      webhookLogId = webhookLog.id;
+    } else {
+      const webhookLog = await prisma.webhookLog.create({
+        data: {
+          id: crypto.randomUUID(),
+          gateway,
+          orderId,
+          status,
+          transactionId,
+          amount,
+          payload: JSON.stringify(body),
+          success: true,
+        },
+      });
+      webhookLogId = webhookLog.id;
+    }
+
+    const orderType = await determineOrderType(orderId);
+    if (orderType === 'voucher') {
+      await handleVoucherOrder(orderId, status, gateway, paymentType, paidAt);
+    } else if (orderType === 'invoice') {
+      await handleInvoicePayment(orderId, status, gateway, paymentType, paidAt);
+    } else {
+      console.log(`Order not found for ${orderId}, skipping update`);
+    }
+
+    if (webhookLogId) {
+      await prisma.webhookLog.update({
+        where: { id: webhookLogId },
+        data: {
+          response: JSON.stringify({ success: true, gateway, status, orderId }),
+        },
+      });
+    }
+
+    return NextResponse.json({
+      success: true,
+      gateway,
+      status,
+      orderId,
+      message: 'Webhook processed',
+    });
+  } catch (error) {
+    console.error('❌ Webhook processing error:', error);
+    return NextResponse.json({
+      success: true,
+      error: 'Webhook processing failed but acknowledged',
+    });
+  }
 }
 
-export default function DatabaseSettingsPage() {
-  const { hasPermission, loading: permLoading } = usePermissions();
-  const [activeTab, setActiveTab] = useState<'backup' | 'telegram'>('backup');
-  const [loading, setLoading] = useState(true);
-  const [backing, setBacking] = useState(false);
-  const [restoring, setRestoring] = useState(false);
-  const [testing, setTesting] = useState(false);
-  
-  const [backupHistory, setBackupHistory] = useState<BackupHistory[]>([]);
-  const [dbHealth, setDbHealth] = useState<DatabaseHealth | null>(null);
-  const [restoreFile, setRestoreFile] = useState<File | null>(null);
-  
-  const [telegramSettings, setTelegramSettings] = useState<TelegramSettings>({
-    enabled: false,
-    botToken: '',
-    chatId: '',
-    backupTopicId: '',
-    healthTopicId: '',
-    schedule: 'daily',
-    scheduleTime: '02:00',
-    keepLastN: 7,
+async function determineOrderType(
+  orderId: string
+): Promise<'voucher' | 'invoice' | null> {
+  // 1) Voucher by gatewayOrderId
+  let voucher = await prisma.voucherOrder.findFirst({
+    where: { gatewayOrderId: orderId },
   });
 
-  useEffect(() => {
-    if (hasPermission('settings.view')) {
-      loadData();
-    }
-  }, [hasPermission]);
-
-  const loadData = async () => {
-    setLoading(true);
-    try {
-      // Load backup history
-      const historyRes = await fetch('/api/backup/history');
-      const historyData = await historyRes.json();
-      if (historyData.success) {
-        setBackupHistory(historyData.history);
-      }
-
-      // Load DB health
-      const healthRes = await fetch('/api/backup/health');
-      const healthData = await healthRes.json();
-      if (healthData.success) {
-        setDbHealth(healthData.health);
-      }
-
-      // Load Telegram settings
-      const settingsRes = await fetch('/api/telegram/settings');
-      const settingsData = await settingsRes.json();
-      setTelegramSettings(settingsData);
-    } catch (error) {
-      console.error('Load data error:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleBackupNow = async () => {
-    const confirmed = await showConfirm('Create database backup now? This may take a few minutes.');
-    if (!confirmed) return;
-
-    setBacking(true);
-    try {
-      const res = await fetch('/api/backup/create', { method: 'POST' });
-      const data = await res.json();
-      
-      if (data.success) {
-        await showSuccess('Backup created successfully!');
-        loadData();
-        
-        // Download file
-        if (data.downloadUrl) {
-          const link = document.createElement('a');
-          link.href = data.downloadUrl;
-          link.download = data.filename;
-          link.click();
-        }
-      } else {
-        await showError(data.error || 'Backup failed');
-      }
-    } catch (error) {
-      await showError('Failed to create backup: ' + error);
-    } finally {
-      setBacking(false);
-    }
-  };
-
-  const handleRestore = async () => {
-    if (!restoreFile) {
-      await showError('Please select a backup file first');
-      return;
-    }
-
-    const confirmed = await showConfirm(
-      'WARNING: This will restore the database and overwrite all current data. Are you absolutely sure?'
-    );
-    if (!confirmed) return;
-
-    const doubleConfirm = await showConfirm(
-      'Last confirmation: Type YES to proceed with database restore.',
-      true
-    );
-    if (!doubleConfirm) return;
-
-    setRestoring(true);
-    try {
-      const formData = new FormData();
-      formData.append('file', restoreFile);
-
-      const res = await fetch('/api/backup/restore', {
-        method: 'POST',
-        body: formData,
+  // 2) Voucher by parsed order number
+  if (!voucher) {
+    const parts = orderId.split('-');
+    if (parts.length >= 3 && parts[0] === 'EVC') {
+      const orderNumber = parts.slice(0, 3).join('-');
+      voucher = await prisma.voucherOrder.findFirst({
+        where: { orderNumber },
       });
-      
-      const data = await res.json();
-      
-      if (data.success) {
-        await showSuccess('Database restored successfully! Please reload the page.');
-        setTimeout(() => window.location.reload(), 2000);
-      } else {
-        await showError(data.error || 'Restore failed');
-      }
-    } catch (error) {
-      await showError('Failed to restore: ' + error);
-    } finally {
-      setRestoring(false);
     }
-  };
+  }
+  if (voucher) return 'voucher';
 
-  const handleDeleteBackup = async (id: string, filename: string) => {
-    const confirmed = await showConfirm(`Delete backup: ${filename}?`);
-    if (!confirmed) return;
+  // 3) Invoice by gatewayOrderId
+  let invoice = await prisma.invoice.findFirst({
+    where: { gatewayOrderId: orderId },
+  });
 
-    try {
-      const res = await fetch(`/api/backup/delete/${id}`, { method: 'DELETE' });
-      const data = await res.json();
-      
-      if (data.success) {
-        await showSuccess('Backup deleted');
-        loadData();
-      } else {
-        await showError(data.error || 'Delete failed');
-      }
-    } catch (error) {
-      await showError('Failed to delete: ' + error);
-    }
-  };
-
-  const handleSaveTelegramSettings = async () => {
-    try {
-      const res = await fetch('/api/telegram/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(telegramSettings),
+  // 4) Invoice by parsed invoice number
+  if (!invoice) {
+    const parts = orderId.split('-');
+    if (parts.length >= 3 && parts[0] === 'INV') {
+      const invoiceNumber = parts.slice(1, -1).join('-');
+      invoice = await prisma.invoice.findFirst({
+        where: { invoiceNumber },
       });
-      
-      const data = await res.json();
-      
-      if (data.success) {
-        // Restart cron jobs to apply new settings
-        await fetch('/api/cron/telegram', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'restart', job: 'all' }),
+    }
+  }
+  if (invoice) return 'invoice';
+
+  return null;
+}
+
+async function handleVoucherOrder(
+  orderId: string,
+  status: string,
+  gateway: string,
+  paymentType: string,
+  paidAt: Date | null
+) {
+  let order = await prisma.voucherOrder.findFirst({
+    where: { paymentToken: orderId },
+    include: { profile: true },
+  });
+
+  if (!order) {
+    const parts = orderId.split('-');
+    if (parts.length >= 3 && parts[0] === 'EVC') {
+      const orderNumber = parts.slice(0, 3).join('-');
+      order = await prisma.voucherOrder.findFirst({
+        where: { orderNumber },
+        include: { profile: true },
+      });
+    }
+  }
+
+  if (!order) {
+    console.error(`❌ Voucher order not found for orderId: ${orderId}`);
+    return;
+  }
+
+  console.log(`✅ Voucher order found: ${order.orderNumber}`);
+
+  if (status !== 'settlement' && status !== 'capture') return;
+  if (order.status === 'PAID') return;
+
+  await prisma.voucherOrder.update({
+    where: { id: order.id },
+    data: { status: 'PAID', paidAt: paidAt || new Date() },
+  });
+
+  console.log(`✅ Order ${order.orderNumber} marked as PAID`);
+
+  const vouchers: Array<{ code: string }> = [];
+  for (let i = 0; i < order.quantity; i++) {
+    let voucherCode = '';
+    let isUnique = false;
+    while (!isUnique) {
+      voucherCode = generateVoucherCode(8);
+      const existing = await prisma.hotspotVoucher.findUnique({
+        where: { code: voucherCode },
+      });
+      if (!existing) isUnique = true;
+    }
+
+    const voucher = await prisma.hotspotVoucher.create({
+      data: {
+        id: crypto.randomUUID(),
+        code: voucherCode,
+        batchCode: order.orderNumber,
+        profileId: order.profileId,
+        orderId: order.id,
+        status: 'WAITING',
+      },
+    });
+
+    vouchers.push({ code: voucher.code });
+
+    try {
+      await syncVoucherToRadius(voucher.id);
+      console.log(`✅ Voucher ${voucherCode} synced to RADIUS`);
+    } catch (radiusError) {
+      console.error(`RADIUS sync error for ${voucherCode}:`, radiusError);
+    }
+  }
+
+  console.log(`✅ Generated ${vouchers.length} vouchers for order ${order.orderNumber}`);
+
+  try {
+    const hotspotCategory = await prisma.transactionCategory.findFirst({
+      where: { name: 'Pembayaran Hotspot', type: 'INCOME' },
+    });
+
+    if (hotspotCategory) {
+      const existingTransaction = await prisma.transaction.findFirst({
+        where: { reference: order.orderNumber },
+      });
+
+      if (!existingTransaction) {
+        await prisma.transaction.create({
+          data: {
+            id: nanoid(),
+            categoryId: hotspotCategory.id,
+            type: 'INCOME',
+            amount: order.totalAmount,
+            description: `Voucher ${order.profile.name} (${order.quantity}x) - ${order.customerName}`,
+            date: paidAt || new Date(),
+            reference: order.orderNumber,
+            notes: `Auto-synced from voucher order payment via ${gateway} (${paymentType})`,
+          },
         });
-        
-        await showSuccess('Telegram settings saved and cron jobs restarted!');
-        loadData();
-      } else {
-        await showError(data.error || 'Save failed');
+        console.log(`✅ Transaction synced to Keuangan: ${order.orderNumber}`);
       }
-    } catch (error) {
-      await showError('Failed to save: ' + error);
     }
-  };
+  } catch (keuanganError) {
+    console.error('Keuangan sync error:', keuanganError);
+  }
 
-  const handleTestTelegram = async () => {
-    if (!telegramSettings.botToken || !telegramSettings.chatId) {
-      await showError('Please enter Bot Token and Chat ID first');
-      return;
-    }
+  try {
+    await sendVoucherPurchaseSuccess({
+      customerName: order.customerName,
+      customerPhone: order.customerPhone,
+      orderNumber: order.orderNumber,
+      profileName: order.profile.name,
+      quantity: order.quantity,
+      voucherCodes: vouchers.map((v) => v.code),
+      validityValue: order.profile.validityValue,
+      validityUnit: order.profile.validityUnit,
+    });
+    console.log(`✅ WhatsApp voucher notification sent to ${order.customerPhone}`);
+  } catch (waError) {
+    console.error('WhatsApp voucher notification error:', waError);
+  }
+}
 
-    setTesting(true);
-    try {
-      const res = await fetch('/api/telegram/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          botToken: telegramSettings.botToken,
-          chatId: telegramSettings.chatId,
-          backupTopicId: telegramSettings.backupTopicId || undefined,
-          healthTopicId: telegramSettings.healthTopicId || undefined,
-        }),
+function generateVoucherCode(length: number = 8): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < length; i++) {
+    code += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return code;
+}
+
+async function handleInvoicePayment(
+  orderId: string,
+  status: string,
+  gateway: string,
+  paymentType: string,
+  paidAt: Date | null
+) {
+  let invoice = await prisma.invoice.findFirst({
+    where: { paymentToken: orderId },
+    include: { user: { include: { profile: true } } },
+  });
+
+  if (!invoice) {
+    const parts = orderId.split('-');
+    if (parts.length >= 3 && parts[0] === 'INV') {
+      const invoiceNumber = parts.slice(1, -1).join('-');
+      invoice = await prisma.invoice.findFirst({
+        where: { invoiceNumber },
+        include: { user: { include: { profile: true } } },
       });
-      
-      const data = await res.json();
-      
-      if (data.success) {
-        const count = data.results?.length || 0;
-        await showSuccess(`Test messages sent to ${count} location(s)! Check your Telegram.`);
-      } else {
-        await showError(data.error || 'Connection test failed');
-      }
-    } catch (error) {
-      await showError('Failed to test: ' + error);
-    } finally {
-      setTesting(false);
     }
-  };
-
-  const formatFileSize = (bytes: number) => {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
-  };
-
-  // Permission check
-  const canView = hasPermission('settings.view');
-  const canEdit = hasPermission('settings.edit');
-
-  if (!permLoading && !canView) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh]">
-        <Shield className="w-16 h-16 text-gray-400 mb-4" />
-        <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">
-          Access Denied
-        </h2>
-        <p className="text-gray-500 dark:text-gray-400">
-          You don't have permission to view database settings.
-        </p>
-      </div>
-    );
   }
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <RefreshCw className="w-8 h-8 animate-spin text-blue-600" />
-      </div>
-    );
+  if (!invoice) {
+    console.error('Invoice not found for orderId:', orderId);
+    return;
   }
 
-  return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <h1 className="text-2xl lg:text-3xl font-bold text-gray-900 dark:text-gray-100">
-          Database Management
-        </h1>
-        <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-          Backup, restore, and monitor your database
-        </p>
-      </div>
+  console.log(`✅ Invoice found: ${invoice.invoiceNumber}`);
 
-      {/* Database Health Status */}
-      {dbHealth && (
-        <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold flex items-center gap-2">
-              <Activity className="w-5 h-5" />
-              Database Health
-            </h2>
-            <div className="flex items-center gap-2">
-              {dbHealth.status === 'healthy' && (
-                <span className="flex items-center gap-1 text-green-600">
-                  <CheckCircle className="w-5 h-5" />
-                  Healthy
-                </span>
-              )}
-              {dbHealth.status === 'warning' && (
-                <span className="flex items-center gap-1 text-yellow-600">
-                  <AlertCircle className="w-5 h-5" />
-                  Warning
-                </span>
-              )}
-              {dbHealth.status === 'error' && (
-                <span className="flex items-center gap-1 text-red-600">
-                  <AlertCircle className="w-5 h-5" />
-                  Error
-                </span>
-              )}
-            </div>
-          </div>
+  if (status !== 'settlement' && status !== 'capture') return;
+  if (invoice.status === 'PAID') return;
 
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-            <div className="space-y-1">
-              <p className="text-xs text-gray-500">Database Size</p>
-              <p className="text-lg font-semibold">{dbHealth.size}</p>
-            </div>
-            <div className="space-y-1">
-              <p className="text-xs text-gray-500">Tables</p>
-              <p className="text-lg font-semibold">{dbHealth.tables}</p>
-            </div>
-            <div className="space-y-1">
-              <p className="text-xs text-gray-500">Connections</p>
-              <p className="text-lg font-semibold">{dbHealth.connections}</p>
-            </div>
-            <div className="space-y-1">
-              <p className="text-xs text-gray-500">Last Backup</p>
-              <p className="text-lg font-semibold">
-                {dbHealth.lastBackup ? formatNairobi(dbHealth.lastBackup, 'dd/MM HH:mm') : 'Never'}
-              </p>
-            </div>
-            <div className="space-y-1">
-              <p className="text-xs text-gray-500">Uptime</p>
-              <p className="text-lg font-semibold">{dbHealth.uptime}</p>
-            </div>
-            <div>
-              <button
-                onClick={loadData}
-                className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition flex items-center justify-center gap-2"
-              >
-                <RefreshCw className="w-4 h-4" />
-                Refresh
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+  await prisma.invoice.update({
+    where: { id: invoice.id },
+    data: { status: 'PAID', paidAt: paidAt || new Date() },
+  });
 
-      {/* Tabs */}
-      <div className="border-b border-gray-200 dark:border-gray-700">
-        <div className="flex gap-4">
-          <button
-            onClick={() => setActiveTab('backup')}
-            className={`px-4 py-2 border-b-2 transition ${
-              activeTab === 'backup'
-                ? 'border-blue-600 text-blue-600 font-semibold'
-                : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
-            }`}
-          >
-            <div className="flex items-center gap-2">
-              <Database className="w-4 h-4" />
-              Backup & Restore
-            </div>
-          </button>
-          <button
-            onClick={() => setActiveTab('telegram')}
-            className={`px-4 py-2 border-b-2 transition ${
-              activeTab === 'telegram'
-                ? 'border-blue-600 text-blue-600 font-semibold'
-                : 'border-transparent text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
-            }`}
-          >
-            <div className="flex items-center gap-2">
-              <Send className="w-4 h-4" />
-              Telegram Auto-Backup
-            </div>
-          </button>
-        </div>
-      </div>
+  const existingPayment = await prisma.payment.findFirst({
+    where: { invoiceId: invoice.id },
+  });
 
-      {/* Backup Tab */}
-      {activeTab === 'backup' && (
-        <div className="space-y-6">
-          {/* Manual Backup/Restore */}
-          <div className="grid md:grid-cols-2 gap-6">
-            {/* Backup Card */}
-            <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
-              <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                <Download className="w-5 h-5" />
-                Create Backup
-              </h3>
-              <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-                Download a complete backup of your database as SQL file
-              </p>
-              <button
-                onClick={handleBackupNow}
-                disabled={backing || !canEdit}
-                className="w-full px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-lg transition flex items-center justify-center gap-2 font-medium"
-              >
-                {backing ? (
-                  <>
-                    <RefreshCw className="w-4 h-4 animate-spin" />
-                    Creating Backup...
-                  </>
-                ) : (
-                  <>
-                    <Download className="w-4 h-4" />
-                    Backup Now
-                  </>
-                )}
-              </button>
-            </div>
+  if (!existingPayment) {
+    await prisma.payment.create({
+      data: {
+        id: crypto.randomUUID(),
+        invoiceId: invoice.id,
+        amount: invoice.amount,
+        method: `${gateway}_${paymentType}`,
+        status: 'completed',
+        paidAt: paidAt || new Date(),
+      },
+    });
+    console.log(`✅ Payment record created for invoice ${invoice.invoiceNumber}`);
+  }
 
-            {/* Restore Card */}
-            <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
-              <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                <Upload className="w-5 h-5" />
-                Restore Database
-              </h3>
-              <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-                Upload and restore database from backup file (.sql)
-              </p>
-              <input
-                type="file"
-                accept=".sql"
-                onChange={(e) => setRestoreFile(e.target.files?.[0] || null)}
-                className="block w-full text-sm mb-3 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 dark:file:bg-gray-700 dark:file:text-blue-400"
-                disabled={!canEdit}
-              />
-              <button
-                onClick={handleRestore}
-                disabled={!restoreFile || restoring || !canEdit}
-                className="w-full px-4 py-3 bg-red-600 hover:bg-red-700 disabled:bg-gray-400 text-white rounded-lg transition flex items-center justify-center gap-2 font-medium"
-              >
-                {restoring ? (
-                  <>
-                    <RefreshCw className="w-4 h-4 animate-spin" />
-                    Restoring...
-                  </>
-                ) : (
-                  <>
-                    <Upload className="w-4 h-4" />
-                    Restore Database
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
+  console.log(`✅ Invoice ${invoice.invoiceNumber} marked as PAID`);
 
-          {/* Backup History */}
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow">
-            <div className="p-6 border-b border-gray-200 dark:border-gray-700">
-              <h3 className="text-lg font-semibold flex items-center gap-2">
-                <Clock className="w-5 h-5" />
-                Backup History
-              </h3>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-gray-50 dark:bg-gray-700">
-                  <tr>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">
-                      Date & Time
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">
-                      Filename
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">
-                      Size
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">
-                      Type
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">
-                      Status
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                  {backupHistory.length === 0 ? (
-                    <tr>
-                      <td colSpan={6} className="px-6 py-8 text-center text-gray-500">
-                        No backup history yet
-                      </td>
-                    </tr>
-                  ) : (
-                    backupHistory.map((backup) => (
-                      <tr key={backup.id} className="hover:bg-gray-50 dark:hover:bg-gray-700">
-                        <td className="px-6 py-4 text-sm">
-                          {formatNairobi(backup.createdAt)}
-                        </td>
-                        <td className="px-6 py-4 text-sm font-mono">
-                          {backup.filename}
-                        </td>
-                        <td className="px-6 py-4 text-sm">
-                          {formatFileSize(backup.filesize)}
-                        </td>
-                        <td className="px-6 py-4 text-sm">
-                          <span
-                            className={`px-2 py-1 rounded-full text-xs ${
-                              backup.type === 'auto'
-                                ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-400'
-                                : 'bg-gray-100 text-gray-800 dark:bg-gray-900/20 dark:text-gray-400'
-                            }`}
-                          >
-                            {backup.type}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4 text-sm">
-                          {backup.status === 'success' ? (
-                            <span className="flex items-center gap-1 text-green-600">
-                              <CheckCircle className="w-4 h-4" />
-                              Success
-                            </span>
-                          ) : (
-                            <span className="flex items-center gap-1 text-red-600">
-                              <AlertCircle className="w-4 h-4" />
-                              Failed
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-6 py-4 text-sm">
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={() => {
-                                const link = document.createElement('a');
-                                link.href = `/api/backup/download/${backup.id}`;
-                                link.download = backup.filename;
-                                link.click();
-                              }}
-                              className="text-blue-600 hover:text-blue-800 dark:hover:text-blue-400"
-                              title="Download"
-                            >
-                              <Download className="w-4 h-4" />
-                            </button>
-                            {canEdit && (
-                              <button
-                                onClick={() => handleDeleteBackup(backup.id, backup.filename)}
-                                className="text-red-600 hover:text-red-800 dark:hover:text-red-400"
-                                title="Delete"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
+  try {
+    const pppoeCategory = await prisma.transactionCategory.findFirst({
+      where: { name: 'Pembayaran PPPoE', type: 'INCOME' },
+    });
 
-      {/* Telegram Tab */}
-      {activeTab === 'telegram' && (
-        <div className="space-y-6">
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
-            <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <Send className="w-5 h-5" />
-              Telegram Auto-Backup Configuration
-            </h3>
+    if (pppoeCategory) {
+      const existingTransaction = await prisma.transaction.findFirst({
+        where: { reference: `INV-${invoice.invoiceNumber}` },
+      });
 
-            <div className="space-y-4">
-              {/* Enable Toggle */}
-              <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
-                <div>
-                  <label className="font-medium">Enable Auto-Backup</label>
-                  <p className="text-sm text-gray-500">Automatically backup database to Telegram</p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={telegramSettings.enabled}
-                    onChange={(e) =>
-                      setTelegramSettings({ ...telegramSettings, enabled: e.target.checked })
-                    }
-                    className="sr-only peer"
-                    disabled={!canEdit}
-                  />
-                  <div className="w-11 h-6 bg-gray-300 peer-focus:ring-4 peer-focus:ring-blue-300 dark:peer-focus:ring-blue-800 rounded-full peer dark:bg-gray-600 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-blue-600"></div>
-                </label>
-              </div>
+      if (!existingTransaction) {
+        const customerName = invoice.customerName || invoice.user?.name || 'Unknown';
+        const profileName = invoice.user?.profile?.name || 'Unknown';
 
-              {/* Bot Token */}
-              <div>
-                <label className="block text-sm font-medium mb-2">
-                  Telegram Bot Token
-                </label>
-                <input
-                  type="text"
-                  value={telegramSettings.botToken || ''}
-                  onChange={(e) =>
-                    setTelegramSettings({ ...telegramSettings, botToken: e.target.value })
-                  }
-                  placeholder="1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"
-                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700"
-                  disabled={!canEdit}
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  Get token from @BotFather on Telegram
-                </p>
-              </div>
+        await prisma.$executeRaw`
+          INSERT INTO transactions (id, categoryId, type, amount, description, date, reference, notes, createdAt, updatedAt)
+          VALUES (${nanoid()}, ${pppoeCategory.id}, 'INCOME', ${invoice.amount},
+                  ${`Pembayaran ${profileName} - ${customerName}`}, NOW(),
+                  ${`INV-${invoice.invoiceNumber}`},
+                  ${`Payment via ${gateway} (${paymentType})`}, NOW(), NOW())
+        `;
+        console.log(
+          `✅ Transaction synced to Keuangan: ${invoice.invoiceNumber} (${formatCurrency(invoice.amount)})`
+        );
+      }
+    }
+  } catch (keuanganError) {
+    console.error('Keuangan sync error:', keuanganError);
+  }
 
-              {/* Chat ID */}
-              <div>
-                <label className="block text-sm font-medium mb-2">
-                  Chat ID (Group)
-                </label>
-                <input
-                  type="text"
-                  value={telegramSettings.chatId || ''}
-                  onChange={(e) =>
-                    setTelegramSettings({ ...telegramSettings, chatId: e.target.value })
-                  }
-                  placeholder="-1001234567890"
-                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700"
-                  disabled={!canEdit}
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  Get Chat ID from @userinfobot or your group
-                </p>
-              </div>
+  const user = invoice.user;
+  if (!user || !user.profile) return;
 
-              {/* Backup Topic ID */}
-              <div>
-                <label className="block text-sm font-medium mb-2">
-                  Backup Topic ID
-                </label>
-                <input
-                  type="text"
-                  value={telegramSettings.backupTopicId || ''}
-                  onChange={(e) =>
-                    setTelegramSettings({ ...telegramSettings, backupTopicId: e.target.value })
-                  }
-                  placeholder="123"
-                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700"
-                  disabled={!canEdit}
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  Topic ID for backup messages (right-click topic → Copy Link → extract ID)
-                </p>
-              </div>
+  const profile = user.profile;
+  const now = new Date();
+  let baseDate = user.expiredAt ? new Date(user.expiredAt) : now;
+  if (baseDate < now) baseDate = now;
 
-              {/* Health Topic ID */}
-              <div>
-                <label className="block text-sm font-medium mb-2">
-                  Health Topic ID (Optional)
-                </label>
-                <input
-                  type="text"
-                  value={telegramSettings.healthTopicId || ''}
-                  onChange={(e) =>
-                    setTelegramSettings({ ...telegramSettings, healthTopicId: e.target.value })
-                  }
-                  placeholder="456"
-                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700"
-                  disabled={!canEdit}
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  Topic ID for health check reports
-                </p>
-              </div>
+  const newExpiredAt = new Date(baseDate);
+  switch (profile.validityUnit) {
+    case 'DAYS':
+      newExpiredAt.setDate(newExpiredAt.getDate() + profile.validityValue);
+      break;
+    case 'MONTHS':
+      newExpiredAt.setMonth(newExpiredAt.getMonth() + profile.validityValue);
+      break;
+    case 'HOURS':
+      newExpiredAt.setHours(newExpiredAt.getHours() + profile.validityValue);
+      break;
+    case 'MINUTES':
+      newExpiredAt.setMinutes(newExpiredAt.getMinutes() + profile.validityValue);
+      break;
+  }
 
-              {/* Schedule */}
-              <div className="grid md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium mb-2">
-                    Schedule
-                  </label>
-                  <select
-                    value={telegramSettings.schedule || 'daily'}
-                    onChange={(e) =>
-                      setTelegramSettings({ ...telegramSettings, schedule: e.target.value })
-                    }
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700"
-                    disabled={!canEdit}
-                  >
-                    <option value="daily">Daily</option>
-                    <option value="12h">Every 12 Hours</option>
-                    <option value="6h">Every 6 Hours</option>
-                    <option value="weekly">Weekly (Sunday)</option>
-                  </select>
-                </div>
+  const wasIsolatedOrSuspended =
+    user.status === 'isolated' || user.status === 'suspended';
+  const newStatus = wasIsolatedOrSuspended ? 'active' : user.status;
 
-                <div>
-                  <label className="block text-sm font-medium mb-2">
-                    Time (WIB)
-                  </label>
-                  <input
-                    type="time"
-                    value={telegramSettings.scheduleTime || '00:00'}
-                    onChange={(e) =>
-                      setTelegramSettings({ ...telegramSettings, scheduleTime: e.target.value })
-                    }
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700"
-                    disabled={!canEdit}
-                  />
-                </div>
-              </div>
+  await prisma.pppoeUser.update({
+    where: { id: user.id },
+    data: { expiredAt: newExpiredAt, status: newStatus },
+  });
 
-              {/* Keep Last N */}
-              <div>
-                <label className="block text-sm font-medium mb-2">
-                  Keep Last Backups
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  max="30"
-                  value={telegramSettings.keepLastN || 7}
-                  onChange={(e) =>
-                    setTelegramSettings({ ...telegramSettings, keepLastN: parseInt(e.target.value) || 7 })
-                  }
-                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700"
-                  disabled={!canEdit}
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  Automatically delete old backups, keep only last N files
-                </p>
-              </div>
-
-              {/* Action Buttons */}
-              {canEdit && (
-                <div className="grid grid-cols-2 gap-3 pt-4">
-                  <button
-                    onClick={handleTestTelegram}
-                    disabled={testing}
-                    className="px-4 py-2 border border-blue-600 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition flex items-center justify-center gap-2"
-                  >
-                    {testing ? (
-                      <>
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                        Testing...
-                      </>
-                    ) : (
-                      <>
-                        <Send className="w-4 h-4" />
-                        Test Connection
-                      </>
-                    )}
-                  </button>
-                  <button
-                    onClick={handleSaveTelegramSettings}
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition"
-                  >
-                    Save Settings
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Info Card */}
-          <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
-            <h4 className="font-medium text-blue-900 dark:text-blue-400 mb-2">
-              📘 How to Setup Telegram Backup
-            </h4>
-            <ol className="text-sm text-blue-800 dark:text-blue-300 space-y-1 list-decimal list-inside">
-              <li>Create a bot via @BotFather on Telegram and get the Bot Token</li>
-              <li>Create a group, add your bot as admin</li>
-              <li>Enable Topics in group settings</li>
-              <li>Create topics: "Backup" and "Health"</li>
-              <li>Get Chat ID from @getidsbot in your group</li>
-              <li>Right-click each topic → Copy Link → extract topic ID from URL</li>
-              <li>Enter all credentials above and click "Test"</li>
-              <li>Click "Test Backup" to send actual backup file</li>
-              <li>Enable auto-backup and save settings</li>
-            </ol>
-          </div>
-        </div>
-      )}
-    </div>
+  console.log(`✅ User ${user.username} updated:`);
+  console.log(
+    `   - Expiry: ${user.expiredAt?.toISOString() || 'N/A'} → ${newExpiredAt.toISOString()}`
   );
+
+  try {
+    await sendPaymentSuccess({
+      customerName: user.name,
+      customerPhone: user.phone,
+      username: user.username,
+      password: user.password,
+      profileName: profile.name,
+      invoiceNumber: invoice.invoiceNumber,
+      amount: invoice.amount,
+    });
+    console.log(`✅ WhatsApp payment success notification sent`);
+  } catch (waError) {
+    console.error('WhatsApp notification error:', waError);
+  }
+
+  if (!wasIsolatedOrSuspended) return;
+
+  console.log(`   - Status: ${user.status} → ${newStatus}`);
+
+  try {
+    await prisma.$executeRaw`
+      INSERT INTO radcheck (username, attribute, op, value)
+      VALUES (${user.username}, 'Cleartext-Password', ':=', ${user.password})
+      ON DUPLICATE KEY UPDATE value = ${user.password}
+    `;
+
+    await prisma.$executeRaw`
+      INSERT INTO radusergroup (username, groupname, priority)
+      VALUES (${user.username}, ${profile.groupName}, 0)
+      ON DUPLICATE KEY UPDATE groupname = ${profile.groupName}
+    `;
+
+    await prisma.radreply.deleteMany({
+      where: { username: user.username, attribute: 'Reply-Message' },
+    });
+
+    if (user.ipAddress) {
+      await prisma.$executeRaw`
+        INSERT INTO radreply (username, attribute, op, value)
+        VALUES (${user.username}, 'Framed-IP-Address', ':=', ${user.ipAddress})
+        ON DUPLICATE KEY UPDATE value = ${user.ipAddress}
+      `;
+    }
+
+    console.log(`✅ RADIUS entries restored for ${user.username}`);
+
+    const registration = await prisma.registrationRequest.findFirst({
+      where: { pppoeUserId: user.id, status: 'INSTALLED' },
+    });
+
+    if (registration) {
+      await prisma.registrationRequest.update({
+        where: { id: registration.id },
+        data: { status: 'ACTIVE' },
+      });
+      console.log(`✅ Registration ${registration.id} status updated to ACTIVE`);
+    }
+
+    if (user.routerId) {
+      const company = await prisma.company.findFirst();
+      const baseUrl = company?.baseUrl || process.env.NEXT_PUBLIC_APP_URL;
+      if (baseUrl) {
+        try {
+          const coaRes = await fetch(`${baseUrl}/api/coa/disconnect`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: user.username }),
+          });
+          if (coaRes.ok) {
+            console.log(`✅ CoA disconnect sent for ${user.username}`);
+          }
+        } catch (coaError) {
+          console.error('CoA disconnect failed:', coaError);
+        }
+      }
+    }
+  } catch (radiusError) {
+    console.error('RADIUS sync error:', radiusError);
+  }
 }

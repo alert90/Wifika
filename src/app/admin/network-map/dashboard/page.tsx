@@ -1,10 +1,9 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import {
   Server,
   Router as RouterIcon,
@@ -17,13 +16,26 @@ import {
   Layers,
 } from 'lucide-react';
 
-// Dynamic import map to avoid SSR
+interface PppoeUserLite {
+  id: string;
+  latitude: number | null;
+  longitude: number | null;
+  status: string;
+  [key: string]: unknown;
+}
+
 const NetworkMapComponent = dynamic(
   () => import('@/components/map/NetworkMapComponent'),
-  { ssr: false, loading: () => <div className="h-full w-full bg-gray-100 dark:bg-gray-900 flex items-center justify-center">Loading map...</div> }
+  {
+    ssr: false,
+    loading: () => (
+      <div className="h-full w-full bg-gray-100 dark:bg-gray-900 flex items-center justify-center">
+        Loading map...
+      </div>
+    ),
+  }
 );
 
-// PON Port Colors (16 ports) - Same as management page
 const PON_COLORS = [
   { port: 1, color: '#EF4444', name: 'PON 1' },
   { port: 2, color: '#F97316', name: 'PON 2' },
@@ -60,35 +72,35 @@ export default function NetworkMapDashboard() {
     odps: true,
     customers: true,
     cables: true,
+    customAps: true,
   });
 
   const [networkData, setNetworkData] = useState({
-    servers: [],
-    olts: [],
-    odcs: [],
-    odps: [],
-    customers: [],
-    customerAssignments: [],
+    servers: [] as unknown[],
+    olts: [] as unknown[],
+    odcs: [] as unknown[],
+    odps: [] as unknown[],
+    customers: [] as PppoeUserLite[],
+    customerAssignments: [] as unknown[],
+    customAps: [] as unknown[],
   });
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  useEffect(() => {
-    loadNetworkData();
-  }, []);
-
-  const loadNetworkData = async () => {
+  const loadNetworkData = useCallback(async () => {
     setLoading(true);
     try {
-      const [serversRes, oltsRes, odcsRes, odpsRes, customersRes, assignmentsRes] = await Promise.all([
-        fetch('/api/network/servers'),
-        fetch('/api/network/olts'),
-        fetch('/api/network/odcs'),
-        fetch('/api/network/odps'),
-        fetch('/api/pppoe/users'), // Existing users API
-        fetch('/api/network/customers/assign'),
-      ]);
+      const [serversRes, oltsRes, odcsRes, odpsRes, customersRes, assignmentsRes, customApsRes] =
+        await Promise.all([
+          fetch('/api/network/servers'),
+          fetch('/api/network/olts'),
+          fetch('/api/network/odcs'),
+          fetch('/api/network/odps'),
+          fetch('/api/pppoe/users'),
+          fetch('/api/network/customers/assign'),
+          fetch('/api/network/custom-aps'),
+        ]);
 
       const servers = await serversRes.json();
       const olts = await oltsRes.json();
@@ -96,10 +108,10 @@ export default function NetworkMapDashboard() {
       const odps = await odpsRes.json();
       const customers = await customersRes.json();
       const assignments = await assignmentsRes.json();
+      const customAps = await customApsRes.json().catch(() => ({ data: [] }));
 
-      // Filter customers with latitude and longitude
       const customersWithLocation = (customers.users || []).filter(
-        (user: any) => user.latitude && user.longitude
+        (user: PppoeUserLite) => user.latitude && user.longitude
       );
 
       setNetworkData({
@@ -109,6 +121,7 @@ export default function NetworkMapDashboard() {
         odps: odps.odps || [],
         customers: customersWithLocation,
         customerAssignments: assignments || [],
+        customAps: customAps.data || [],
       });
 
       setStats({
@@ -118,31 +131,31 @@ export default function NetworkMapDashboard() {
         odps: odps.odps?.length || 0,
         customers: customers.users?.length || 0,
         activeCustomers:
-          customers.users?.filter((u: any) => u.status === 'active').length || 0,
+          customers.users?.filter((u: PppoeUserLite) => u.status === 'active').length || 0,
       });
     } catch (error) {
       console.error('Failed to load network data:', error);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    void loadNetworkData();
+  }, [loadNetworkData]);
 
   const handleRefresh = () => {
     setRefreshing(true);
-    loadNetworkData();
+    void loadNetworkData();
     setTimeout(() => setRefreshing(false), 1000);
   };
 
   const toggleLayer = (layer: keyof typeof visibleLayers) => {
-    setVisibleLayers((prev) => ({
-      ...prev,
-      [layer]: !prev[layer],
-    }));
+    setVisibleLayers((prev) => ({ ...prev, [layer]: !prev[layer] }));
   };
 
   return (
     <div className="p-6 space-y-6">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold">Network Map</h1>
@@ -154,7 +167,6 @@ export default function NetworkMapDashboard() {
         </Button>
       </div>
 
-      {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
         <Card>
           <CardContent className="p-4">
@@ -229,9 +241,7 @@ export default function NetworkMapDashboard() {
         </Card>
       </div>
 
-      {/* Map + Controls */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        {/* Layer Controls */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -246,16 +256,8 @@ export default function NetworkMapDashboard() {
                 <Server className="h-4 w-4 text-blue-400" />
                 Servers
               </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => toggleLayer('servers')}
-              >
-                {visibleLayers.servers ? (
-                  <Eye className="h-4 w-4" />
-                ) : (
-                  <EyeOff className="h-4 w-4" />
-                )}
+              <Button variant="ghost" size="sm" onClick={() => toggleLayer('servers')}>
+                {visibleLayers.servers ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
               </Button>
             </div>
 
@@ -264,16 +266,8 @@ export default function NetworkMapDashboard() {
                 <RouterIcon className="h-4 w-4 text-purple-400" />
                 OLTs
               </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => toggleLayer('olts')}
-              >
-                {visibleLayers.olts ? (
-                  <Eye className="h-4 w-4" />
-                ) : (
-                  <EyeOff className="h-4 w-4" />
-                )}
+              <Button variant="ghost" size="sm" onClick={() => toggleLayer('olts')}>
+                {visibleLayers.olts ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
               </Button>
             </div>
 
@@ -282,16 +276,8 @@ export default function NetworkMapDashboard() {
                 <Radio className="h-4 w-4 text-yellow-400" />
                 ODCs
               </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => toggleLayer('odcs')}
-              >
-                {visibleLayers.odcs ? (
-                  <Eye className="h-4 w-4" />
-                ) : (
-                  <EyeOff className="h-4 w-4" />
-                )}
+              <Button variant="ghost" size="sm" onClick={() => toggleLayer('odcs')}>
+                {visibleLayers.odcs ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
               </Button>
             </div>
 
@@ -300,16 +286,8 @@ export default function NetworkMapDashboard() {
                 <Wifi className="h-4 w-4 text-green-400" />
                 ODPs
               </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => toggleLayer('odps')}
-              >
-                {visibleLayers.odps ? (
-                  <Eye className="h-4 w-4" />
-                ) : (
-                  <EyeOff className="h-4 w-4" />
-                )}
+              <Button variant="ghost" size="sm" onClick={() => toggleLayer('odps')}>
+                {visibleLayers.odps ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
               </Button>
             </div>
 
@@ -318,31 +296,19 @@ export default function NetworkMapDashboard() {
                 <Users className="h-4 w-4 text-orange-400" />
                 Customers
               </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => toggleLayer('customers')}
-              >
-                {visibleLayers.customers ? (
-                  <Eye className="h-4 w-4" />
-                ) : (
-                  <EyeOff className="h-4 w-4" />
-                )}
+              <Button variant="ghost" size="sm" onClick={() => toggleLayer('customers')}>
+                {visibleLayers.customers ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
               </Button>
             </div>
 
             <hr />
 
-            {/* PON Port Legend */}
             <div>
               <p className="text-sm font-medium mb-2">PON Port Colors</p>
               <div className="space-y-1.5">
                 {PON_COLORS.map((pon) => (
                   <div key={pon.port} className="flex items-center gap-2 text-xs">
-                    <div
-                      className="w-3 h-3 rounded-full"
-                      style={{ backgroundColor: pon.color }}
-                    />
+                    <div className="w-3 h-3 rounded-full" style={{ backgroundColor: pon.color }} />
                     <span>{pon.name}</span>
                   </div>
                 ))}
@@ -351,7 +317,6 @@ export default function NetworkMapDashboard() {
           </CardContent>
         </Card>
 
-        {/* Map */}
         <div className="lg:col-span-3">
           <Card className="h-[600px]">
             <CardContent className="p-0 h-full">

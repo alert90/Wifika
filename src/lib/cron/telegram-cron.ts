@@ -1,19 +1,24 @@
+// src/lib/cron/telegram-cron.ts
 import cron from 'node-cron';
+import type { ScheduledTask } from 'node-cron';
 import { prisma } from '@/lib/prisma';
 import { nanoid } from 'nanoid';
 import { sendBackupToTelegram, sendHealthReport } from '@/lib/telegram';
 import { createBackup } from '@/lib/backup';
 import * as fs from 'fs/promises';
 
-let backupCronJob: cron.ScheduledTask | null = null;
-let healthCronJob: cron.ScheduledTask | null = null;
+let backupCronJob: ScheduledTask | null = null;
+let healthCronJob: ScheduledTask | null = null;
 
 /**
  * Create and send database backup to Telegram
  */
-export async function autoBackupToTelegram(): Promise<{ success: boolean; error?: string }> {
+export async function autoBackupToTelegram(): Promise<{
+  success: boolean;
+  error?: string;
+}> {
   const startedAt = new Date();
-  
+
   const history = await prisma.cronHistory.create({
     data: {
       id: nanoid(),
@@ -24,7 +29,6 @@ export async function autoBackupToTelegram(): Promise<{ success: boolean; error?
   });
 
   try {
-    // Get Telegram settings
     const settings = await prisma.telegramBackupSettings.findFirst({
       where: { enabled: true },
       orderBy: { createdAt: 'desc' },
@@ -44,24 +48,21 @@ export async function autoBackupToTelegram(): Promise<{ success: boolean; error?
       return { success: true };
     }
 
-    // Create backup
     console.log('[Telegram Backup] Creating database backup...');
     const backupResult = await createBackup('auto');
-    
+
     if (!backupResult.success) {
       throw new Error('Backup creation failed');
     }
 
     const backup = backupResult.backup;
 
-    // Check if file exists
     try {
       await fs.access(backupResult.filepath);
     } catch {
       throw new Error('Backup file not found on disk');
     }
 
-    // Send to Telegram
     console.log('[Telegram Backup] Sending backup to Telegram...');
     const sendResult = await sendBackupToTelegram(
       {
@@ -77,7 +78,6 @@ export async function autoBackupToTelegram(): Promise<{ success: boolean; error?
       throw new Error(sendResult.error || 'Failed to send to Telegram');
     }
 
-    // Clean up old backups if needed
     if (settings.keepLastN > 0) {
       const allBackups = await prisma.backupHistory.findMany({
         where: { type: 'auto' },
@@ -85,16 +85,21 @@ export async function autoBackupToTelegram(): Promise<{ success: boolean; error?
       });
 
       const backupsToDelete = allBackups.slice(settings.keepLastN);
-      
+
       for (const oldBackup of backupsToDelete) {
         try {
           if (oldBackup.filepath) {
             await fs.unlink(oldBackup.filepath);
           }
           await prisma.backupHistory.delete({ where: { id: oldBackup.id } });
-          console.log(`[Telegram Backup] Deleted old backup: ${oldBackup.filename}`);
+          console.log(
+            `[Telegram Backup] Deleted old backup: ${oldBackup.filename}`
+          );
         } catch (error) {
-          console.error(`[Telegram Backup] Failed to delete ${oldBackup.filename}:`, error);
+          console.error(
+            `[Telegram Backup] Failed to delete ${oldBackup.filename}:`,
+            error
+          );
         }
       }
     }
@@ -112,9 +117,10 @@ export async function autoBackupToTelegram(): Promise<{ success: boolean; error?
 
     console.log('[Telegram Backup] Completed successfully');
     return { success: true };
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
     console.error('[Telegram Backup] Error:', error);
-    
+
     const completedAt = new Date();
     await prisma.cronHistory.update({
       where: { id: history.id },
@@ -122,20 +128,23 @@ export async function autoBackupToTelegram(): Promise<{ success: boolean; error?
         status: 'error',
         completedAt,
         duration: completedAt.getTime() - startedAt.getTime(),
-        error: error.message,
+        error: message,
       },
     });
 
-    return { success: false, error: error.message };
+    return { success: false, error: message };
   }
 }
 
 /**
  * Send comprehensive health check to Telegram
  */
-export async function sendHealthCheckToTelegram(): Promise<{ success: boolean; error?: string }> {
+export async function sendHealthCheckToTelegram(): Promise<{
+  success: boolean;
+  error?: string;
+}> {
   const startedAt = new Date();
-  
+
   const history = await prisma.cronHistory.create({
     data: {
       id: nanoid(),
@@ -146,7 +155,6 @@ export async function sendHealthCheckToTelegram(): Promise<{ success: boolean; e
   });
 
   try {
-    // Get Telegram settings
     const settings = await prisma.telegramBackupSettings.findFirst({
       where: { enabled: true },
       orderBy: { createdAt: 'desc' },
@@ -166,10 +174,8 @@ export async function sendHealthCheckToTelegram(): Promise<{ success: boolean; e
       return { success: true };
     }
 
-    // Get comprehensive health data
     const health = await getComprehensiveHealth();
 
-    // Send to Telegram
     console.log('[Telegram Health] Sending health report...');
     const sendResult = await sendHealthReport(
       {
@@ -197,9 +203,10 @@ export async function sendHealthCheckToTelegram(): Promise<{ success: boolean; e
 
     console.log('[Telegram Health] Completed successfully');
     return { success: true };
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
     console.error('[Telegram Health] Error:', error);
-    
+
     const completedAt = new Date();
     await prisma.cronHistory.update({
       where: { id: history.id },
@@ -207,57 +214,55 @@ export async function sendHealthCheckToTelegram(): Promise<{ success: boolean; e
         status: 'error',
         completedAt,
         duration: completedAt.getTime() - startedAt.getTime(),
-        error: error.message,
+        error: message,
       },
     });
 
-    return { success: false, error: error.message };
+    return { success: false, error: message };
   }
 }
 
-/**
- * Get comprehensive system health including DB, billing, and RADIUS
- */
-async function getComprehensiveHealth() {
+interface ComprehensiveHealth {
+  status: string;
+  size: string;
+  tables: number;
+  connections: string;
+  uptime: string;
+  activeSessions: number;
+  totalUsers: number;
+  activeUsers: number;
+  pendingInvoices: number;
+  issues?: string;
+}
+
+async function getComprehensiveHealth(): Promise<ComprehensiveHealth> {
   try {
-    // Database health
-    const sizeResult: any = await prisma.$queryRawUnsafe(`
-      SELECT 
-        ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) as size_mb
-      FROM information_schema.TABLES 
-      WHERE table_schema = DATABASE()
-    `);
+    const sizeResult: Array<{ size_mb: number }> = await prisma.$queryRawUnsafe(
+      `SELECT ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) as size_mb
+       FROM information_schema.TABLES
+       WHERE table_schema = DATABASE()`
+    );
 
-    const tableResult: any = await prisma.$queryRawUnsafe(`
-      SELECT COUNT(*) as count 
-      FROM information_schema.TABLES 
-      WHERE table_schema = DATABASE()
-    `);
+    const tableResult: Array<{ count: bigint | number }> =
+      await prisma.$queryRawUnsafe(
+        `SELECT COUNT(*) as count FROM information_schema.TABLES WHERE table_schema = DATABASE()`
+      );
 
-    const connectionResult: any = await prisma.$queryRawUnsafe(`
-      SHOW STATUS LIKE 'Threads_connected'
-    `);
+    const connectionResult: Array<{ Value: string }> =
+      await prisma.$queryRawUnsafe(`SHOW STATUS LIKE 'Threads_connected'`);
 
-    const uptimeResult: any = await prisma.$queryRawUnsafe(`
-      SHOW STATUS LIKE 'Uptime'
-    `);
+    const uptimeResult: Array<{ Value: string }> = await prisma.$queryRawUnsafe(
+      `SHOW STATUS LIKE 'Uptime'`
+    );
 
-    // RADIUS health - check active sessions
     const activeSessions = await prisma.radacct.count({
-      where: {
-        acctstoptime: null,
-      },
+      where: { acctstoptime: null },
     });
 
-    // Billing health - check pending invoices
     const pendingInvoices = await prisma.invoice.count({
-      where: {
-        status: 'PENDING',
-        dueDate: { lt: new Date() },
-      },
+      where: { status: 'PENDING', dueDate: { lt: new Date() } },
     });
 
-    // PPPoE users count
     const totalUsers = await prisma.pppoeUser.count();
     const activeUsers = await prisma.pppoeUser.count({
       where: { status: 'ACTIVE' },
@@ -267,14 +272,13 @@ async function getComprehensiveHealth() {
     const tableCount = Number(tableResult[0]?.count) || 0;
     const connections = connectionResult[0]?.Value || '0';
     const uptimeSeconds = Number(uptimeResult[0]?.Value) || 0;
-    
+
     const days = Math.floor(uptimeSeconds / 86400);
     const hours = Math.floor((uptimeSeconds % 86400) / 3600);
     const uptime = `${days}d ${hours}h`;
 
-    // Determine overall status
     let status = 'healthy';
-    const issues = [];
+    const issues: string[] = [];
 
     if (sizeMB > 5000) {
       status = 'critical';
@@ -301,7 +305,7 @@ async function getComprehensiveHealth() {
       status,
       size: `${sizeMB} MB`,
       tables: tableCount,
-      connections: connections,
+      connections,
       uptime,
       activeSessions,
       totalUsers,
@@ -330,13 +334,11 @@ async function getComprehensiveHealth() {
  */
 export async function startBackupCron() {
   try {
-    // Stop existing job if running
     if (backupCronJob) {
       backupCronJob.stop();
       backupCronJob = null;
     }
 
-    // Get settings
     const settings = await prisma.telegramBackupSettings.findFirst({
       where: { enabled: true },
       orderBy: { createdAt: 'desc' },
@@ -353,41 +355,45 @@ export async function startBackupCron() {
       scheduleTime: settings.scheduleTime,
     });
 
-    // Parse schedule time (HH:mm format)
     const [hour, minute] = settings.scheduleTime.split(':').map(Number);
 
-  // Build cron expression based on schedule
-  let cronExpression = '';
-  
-  switch (settings.schedule) {
-    case 'daily':
-      cronExpression = `${minute} ${hour} * * *`; // Daily at specified time
-      break;
-    case '12h':
-      cronExpression = `${minute} ${hour},${(hour + 12) % 24} * * *`; // Every 12 hours
-      break;
-    case '6h':
-      cronExpression = `${minute} ${hour},${(hour + 6) % 24},${(hour + 12) % 24},${(hour + 18) % 24} * * *`; // Every 6 hours
-      break;
-    case 'weekly':
-      cronExpression = `${minute} ${hour} * * 0`; // Weekly on Sunday
-      break;
-    default:
-      cronExpression = `${minute} ${hour} * * *`; // Default: daily
-  }
+    let cronExpression = '';
 
-  console.log(`[Telegram Backup Cron] Starting with schedule: ${settings.schedule} at ${settings.scheduleTime} WIB (cron: ${cronExpression})`);
+    switch (settings.schedule) {
+      case 'daily':
+        cronExpression = `${minute} ${hour} * * *`;
+        break;
+      case '12h':
+        cronExpression = `${minute} ${hour},${(hour + 12) % 24} * * *`;
+        break;
+      case '6h':
+        cronExpression = `${minute} ${hour},${(hour + 6) % 24},${
+          (hour + 12) % 24
+        },${(hour + 18) % 24} * * *`;
+        break;
+      case 'weekly':
+        cronExpression = `${minute} ${hour} * * 0`;
+        break;
+      default:
+        cronExpression = `${minute} ${hour} * * *`;
+    }
 
-  backupCronJob = cron.schedule(cronExpression, async () => {
-    console.log('[Telegram Backup Cron] Running...');
-    const result = await autoBackupToTelegram();
-    console.log('[Telegram Backup Cron] Result:', result);
-  }, {
-    timezone: 'Asia/Jakarta' // WIB timezone
-  });
+    console.log(
+      `[Telegram Backup Cron] Starting with schedule: ${settings.schedule} at ${settings.scheduleTime} (cron: ${cronExpression})`
+    );
 
-  backupCronJob.start();
-  console.log('[Telegram Backup Cron] Successfully started');
+    backupCronJob = cron.schedule(
+      cronExpression,
+      async () => {
+        console.log('[Telegram Backup Cron] Running...');
+        const result = await autoBackupToTelegram();
+        console.log('[Telegram Backup Cron] Result:', result);
+      },
+      { timezone: 'Africa/Dar_es_Salaam' }
+    );
+
+    backupCronJob.start();
+    console.log('[Telegram Backup Cron] Successfully started');
   } catch (error) {
     console.error('[Telegram Backup Cron] Failed to start:', error);
   }
@@ -398,13 +404,11 @@ export async function startBackupCron() {
  */
 export async function startHealthCron() {
   try {
-    // Stop existing job if running
     if (healthCronJob) {
       healthCronJob.stop();
       healthCronJob = null;
     }
 
-    // Check if enabled
     const settings = await prisma.telegramBackupSettings.findFirst({
       where: { enabled: true },
       orderBy: { createdAt: 'desc' },
@@ -417,13 +421,15 @@ export async function startHealthCron() {
 
     console.log('[Telegram Health Cron] Starting (every hour at :00)');
 
-    healthCronJob = cron.schedule('0 * * * *', async () => {
-      console.log('[Telegram Health Cron] Running...');
-      const result = await sendHealthCheckToTelegram();
-      console.log('[Telegram Health Cron] Result:', result);
-    }, {
-      timezone: 'Asia/Jakarta' // WIB timezone
-    });
+    healthCronJob = cron.schedule(
+      '0 * * * *',
+      async () => {
+        console.log('[Telegram Health Cron] Running...');
+        const result = await sendHealthCheckToTelegram();
+        console.log('[Telegram Health Cron] Result:', result);
+      },
+      { timezone: 'Africa/Dar_es_Salaam' }
+    );
 
     healthCronJob.start();
     console.log('[Telegram Health Cron] Successfully started');
@@ -432,9 +438,6 @@ export async function startHealthCron() {
   }
 }
 
-/**
- * Stop backup cron
- */
 export function stopBackupCron() {
   if (backupCronJob) {
     backupCronJob.stop();
@@ -443,9 +446,6 @@ export function stopBackupCron() {
   }
 }
 
-/**
- * Stop health cron
- */
 export function stopHealthCron() {
   if (healthCronJob) {
     healthCronJob.stop();
@@ -454,16 +454,9 @@ export function stopHealthCron() {
   }
 }
 
-/**
- * Get cron status
- */
 export function getTelegramCronStatus() {
   return {
-    backup: {
-      running: backupCronJob !== null,
-    },
-    health: {
-      running: healthCronJob !== null,
-    },
+    backup: { running: backupCronJob !== null },
+    health: { running: healthCronJob !== null },
   };
 }

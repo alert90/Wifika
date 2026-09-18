@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -50,17 +49,15 @@ import {
   Download,
   Calendar,
   Tag,
-  BarChart3,
 } from "lucide-react";
+import type { jsPDF as JsPDFType } from "jspdf";
 
 interface Category {
   id: string;
   name: string;
   type: "INCOME" | "EXPENSE";
   description: string | null;
-  _count?: {
-    transactions: number;
-  };
+  _count?: { transactions: number };
 }
 
 interface Transaction {
@@ -89,6 +86,10 @@ interface Stats {
   installCount?: number;
 }
 
+type JsPdfWithAutoTable = JsPDFType & {
+  lastAutoTable?: { finalY: number };
+};
+
 export default function KeuanganPage() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -102,19 +103,17 @@ export default function KeuanganPage() {
     expenseCount: 0,
   });
 
-  // Pagination
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const [total, setTotal] = useState(0);
 
-  // Filters
   const [filterType, setFilterType] = useState("all");
   const [filterCategory, setFilterCategory] = useState("all");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
 
-  // Transaction Dialog
   const [isTransactionDialogOpen, setIsTransactionDialogOpen] = useState(false);
   const [editingTransaction, setEditingTransaction] =
     useState<Transaction | null>(null);
@@ -128,7 +127,6 @@ export default function KeuanganPage() {
     notes: "",
   });
 
-  // Category Dialog
   const [isCategoryDialogOpen, setIsCategoryDialogOpen] = useState(false);
   const [categoryForm, setCategoryForm] = useState({
     name: "",
@@ -138,26 +136,85 @@ export default function KeuanganPage() {
 
   const [processing, setProcessing] = useState(false);
 
-  // Debounce search query
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-
+  /* ---------------- Debounce search ---------------- */
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebouncedSearch(searchQuery);
-    }, 500);
-
+    const timer = setTimeout(() => setDebouncedSearch(searchQuery), 500);
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  useEffect(() => {
-    // Reset and reload when filters change
-    setPage(1);
-    setTransactions([]);
-    setHasMore(true);
-    loadData(1, true);
-  }, [filterType, filterCategory, startDate, endDate, debouncedSearch]);
+  /* ---------------- loadData (declared first) ---------------- */
+  const loadData = useCallback(
+    async (pageNum = 1, reset = false) => {
+      try {
+        if (reset) {
+          setLoading(true);
+          setTransactions([]);
+          setHasMore(true);
+          setPage(1);
+        } else {
+          setLoadingMore(true);
+        }
 
-  // Infinite scroll handler
+        let url = `/api/keuangan/transactions?page=${pageNum}&limit=50`;
+        if (filterType !== "all") url += `&type=${filterType}`;
+        if (filterCategory !== "all") url += `&categoryId=${filterCategory}`;
+        if (startDate && endDate)
+          url += `&startDate=${startDate}&endDate=${endDate}`;
+        if (debouncedSearch)
+          url += `&search=${encodeURIComponent(debouncedSearch)}`;
+
+        const [transRes, catRes] = await Promise.all([
+          fetch(url),
+          fetch("/api/keuangan/categories"),
+        ]);
+
+        const transData = await transRes.json();
+        const catData = await catRes.json();
+
+        if (transData.success) {
+          if (reset) {
+            setTransactions(transData.transactions);
+          } else {
+            setTransactions((prev) => [...prev, ...transData.transactions]);
+          }
+          setStats(transData.stats);
+          setTotal(transData.total || 0);
+          setHasMore(transData.transactions.length === 50);
+        }
+
+        if (catData.success) {
+          setCategories(catData.categories);
+        }
+      } catch (error) {
+        console.error("Load data error:", error);
+        await showError("Failed to load data");
+      } finally {
+        setLoading(false);
+        setLoadingMore(false);
+      }
+    },
+    [filterType, filterCategory, startDate, endDate, debouncedSearch]
+  );
+
+  const loadMoreData = useCallback(() => {
+    const nextPage = page + 1;
+    setPage(nextPage);
+    void loadData(nextPage, false);
+  }, [page, loadData]);
+
+  /* ---------------- Effects ---------------- */
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (cancelled) return;
+      await loadData(1, true);
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadData]);
+
   useEffect(() => {
     const handleScroll = () => {
       if (
@@ -169,64 +226,11 @@ export default function KeuanganPage() {
         }
       }
     };
-
     window.addEventListener("scroll", handleScroll);
     return () => window.removeEventListener("scroll", handleScroll);
-  }, [loading, loadingMore, hasMore, page]);
+  }, [loading, loadingMore, hasMore, loadMoreData]);
 
-  const loadData = async (pageNum = 1, reset = false) => {
-    try {
-      if (reset) {
-        setLoading(true);
-      } else {
-        setLoadingMore(true);
-      }
-
-      // Load transactions
-      let url = `/api/keuangan/transactions?page=${pageNum}&limit=50`;
-      if (filterType !== "all") url += `&type=${filterType}`;
-      if (filterCategory !== "all") url += `&categoryId=${filterCategory}`;
-      if (startDate && endDate)
-        url += `&startDate=${startDate}&endDate=${endDate}`;
-      if (debouncedSearch) url += `&search=${encodeURIComponent(debouncedSearch)}`;
-
-      const [transRes, catRes] = await Promise.all([
-        fetch(url),
-        fetch("/api/keuangan/categories"),
-      ]);
-
-      const transData = await transRes.json();
-      const catData = await catRes.json();
-
-      if (transData.success) {
-        if (reset) {
-          setTransactions(transData.transactions);
-        } else {
-          setTransactions((prev) => [...prev, ...transData.transactions]);
-        }
-        setStats(transData.stats);
-        setTotal(transData.total || 0);
-        setHasMore(transData.transactions.length === 50);
-      }
-
-      if (catData.success) {
-        setCategories(catData.categories);
-      }
-    } catch (error) {
-      console.error("Load data error:", error);
-      await showError("Failed to load data");
-    } finally {
-      setLoading(false);
-      setLoadingMore(false);
-    }
-  };
-
-  const loadMoreData = () => {
-    const nextPage = page + 1;
-    setPage(nextPage);
-    loadData(nextPage, false);
-  };
-
+  /* ---------------- Handlers ---------------- */
   const handleAddTransaction = () => {
     setEditingTransaction(null);
     setTransactionForm({
@@ -284,7 +288,7 @@ export default function KeuanganPage() {
       if (data.success) {
         await showSuccess(data.message);
         setIsTransactionDialogOpen(false);
-        loadData();
+        void loadData(1, true);
       } else {
         await showError(data.error);
       }
@@ -299,23 +303,21 @@ export default function KeuanganPage() {
   const handleDeleteTransaction = async (transaction: Transaction) => {
     const confirmed = await showConfirm(
       `Delete transaction: ${transaction.description}?`,
-      "Delete Transaction",
+      "Delete Transaction"
     );
     if (!confirmed) return;
 
     try {
       const res = await fetch(
         `/api/keuangan/transactions?id=${transaction.id}`,
-        {
-          method: "DELETE",
-        },
+        { method: "DELETE" }
       );
 
       const data = await res.json();
 
       if (data.success) {
         await showSuccess(data.message);
-        loadData();
+        void loadData(1, true);
       } else {
         await showError(data.error);
       }
@@ -326,11 +328,7 @@ export default function KeuanganPage() {
   };
 
   const handleAddCategory = () => {
-    setCategoryForm({
-      name: "",
-      type: "INCOME",
-      description: "",
-    });
+    setCategoryForm({ name: "", type: "INCOME", description: "" });
     setIsCategoryDialogOpen(true);
   };
 
@@ -354,7 +352,7 @@ export default function KeuanganPage() {
       if (data.success) {
         await showSuccess(data.message);
         setIsCategoryDialogOpen(false);
-        loadData();
+        void loadData(1, true);
       } else {
         await showError(data.error);
       }
@@ -366,18 +364,15 @@ export default function KeuanganPage() {
     }
   };
 
-  const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat("id-ID", {
+  const formatCurrency = (amount: number) =>
+    new Intl.NumberFormat("id-ID", {
       style: "currency",
       currency: "TZS",
       minimumFractionDigits: 0,
     }).format(amount);
-  };
 
-  const formatDate = (date: string) => {
-    // Convert UTC date from DB to WIB for display
-    return formatNairobi(new Date(date), 'd MMM yyyy');
-  };
+  const formatDate = (date: string) =>
+    formatNairobi(new Date(date), "d MMM yyyy");
 
   const resetFilters = () => {
     setFilterType("all");
@@ -396,15 +391,13 @@ export default function KeuanganPage() {
       const url = `/api/keuangan/export?format=${format}&startDate=${startDate}&endDate=${endDate}&type=${filterType}`;
 
       if (format === "excel") {
-        // Download Excel file
         window.open(url, "_blank");
       } else {
-        // PDF - client side generation
         const res = await fetch(url);
         const data = await res.json();
 
         if (data.transactions) {
-          generatePDF(data.transactions, data.stats);
+          await generatePDF(data.transactions, data.stats);
         }
       }
     } catch (error) {
@@ -413,24 +406,18 @@ export default function KeuanganPage() {
     }
   };
 
-  const generatePDF = async (transactions: any[], stats: any) => {
+  const generatePDF = async (transactions: Transaction[], stats: Stats) => {
     const { jsPDF } = await import("jspdf");
     const autoTable = (await import("jspdf-autotable")).default;
 
     const doc = new jsPDF();
 
-    // Title
     doc.setFontSize(16);
     doc.text("Laporan Keuangan", 14, 15);
     doc.setFontSize(10);
-    doc.text(
-      `Periode: ${formatDate(startDate)} - ${formatDate(endDate)}`,
-      14,
-      22,
-    );
+    doc.text(`Periode: ${formatDate(startDate)} - ${formatDate(endDate)}`, 14, 22);
 
-    // Table
-    const tableData = transactions.map((t: any) => [
+    const tableData = transactions.map((t) => [
       formatDate(t.date),
       t.description,
       t.category.name,
@@ -445,41 +432,39 @@ export default function KeuanganPage() {
       styles: { fontSize: 8 },
     });
 
-    // Summary
-    const finalY = (doc as any).lastAutoTable.finalY + 10;
+    const finalY = ((doc as JsPdfWithAutoTable).lastAutoTable?.finalY ?? 28) + 10;
+
     doc.setFontSize(10);
-    doc.setFont(undefined, "bold");
+    doc.setFont("helvetica", "bold");
     doc.text(`Total Income: ${formatCurrency(stats.totalIncome)}`, 14, finalY);
 
-    // Income breakdown
     doc.setFontSize(9);
-    doc.setFont(undefined, "normal");
+    doc.setFont("helvetica", "normal");
     doc.text(
-      `  - PPPoE: ${formatCurrency(stats.pppoeIncome)} (${stats.pppoeCount}x)`,
+      `  - PPPoE: ${formatCurrency(stats.pppoeIncome || 0)} (${stats.pppoeCount || 0}x)`,
       18,
-      finalY + 5,
+      finalY + 5
     );
     doc.text(
-      `  - Hotspot: ${formatCurrency(stats.hotspotIncome)} (${stats.hotspotCount}x)`,
+      `  - Hotspot: ${formatCurrency(stats.hotspotIncome || 0)} (${stats.hotspotCount || 0}x)`,
       18,
-      finalY + 10,
+      finalY + 10
     );
     doc.text(
-      `  - Installation: ${formatCurrency(stats.installIncome)} (${stats.installCount}x)`,
+      `  - Installation: ${formatCurrency(stats.installIncome || 0)} (${stats.installCount || 0}x)`,
       18,
-      finalY + 15,
+      finalY + 15
     );
 
     doc.setFontSize(10);
-    doc.setFont(undefined, "bold");
+    doc.setFont("helvetica", "bold");
     doc.text(
       `Total Expense: ${formatCurrency(stats.totalExpense)}`,
       14,
-      finalY + 22,
+      finalY + 22
     );
     doc.text(`Net Balance: ${formatCurrency(stats.balance)}`, 14, finalY + 29);
 
-    // Save
     doc.save(`Laporan-Keuangan-${startDate}-${endDate}.pdf`);
   };
 
@@ -520,7 +505,6 @@ export default function KeuanganPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold bg-gradient-to-r from-gray-900 to-gray-600 dark:from-white dark:to-gray-300 bg-clip-text text-transparent">
@@ -542,7 +526,6 @@ export default function KeuanganPage() {
         </div>
       </div>
 
-      {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <Card className="border-l-4 border-l-green-500">
           <CardHeader className="pb-3">
@@ -568,26 +551,19 @@ export default function KeuanganPage() {
               <div className="flex justify-between text-xs">
                 <span className="text-gray-600 dark:text-gray-400">PPPoE:</span>
                 <span className="font-semibold text-gray-700 dark:text-gray-300">
-                  {formatCurrency(stats.pppoeIncome || 0)} (
-                  {stats.pppoeCount || 0}x)
+                  {formatCurrency(stats.pppoeIncome || 0)} ({stats.pppoeCount || 0}x)
                 </span>
               </div>
               <div className="flex justify-between text-xs">
-                <span className="text-gray-600 dark:text-gray-400">
-                  Hotspot:
-                </span>
+                <span className="text-gray-600 dark:text-gray-400">Hotspot:</span>
                 <span className="font-semibold text-gray-700 dark:text-gray-300">
-                  {formatCurrency(stats.hotspotIncome || 0)} (
-                  {stats.hotspotCount || 0}x)
+                  {formatCurrency(stats.hotspotIncome || 0)} ({stats.hotspotCount || 0}x)
                 </span>
               </div>
               <div className="flex justify-between text-xs">
-                <span className="text-gray-600 dark:text-gray-400">
-                  Installation:
-                </span>
+                <span className="text-gray-600 dark:text-gray-400">Installation:</span>
                 <span className="font-semibold text-gray-700 dark:text-gray-300">
-                  {formatCurrency(stats.installIncome || 0)} (
-                  {stats.installCount || 0}x)
+                  {formatCurrency(stats.installIncome || 0)} ({stats.installCount || 0}x)
                 </span>
               </div>
             </div>
@@ -647,7 +623,6 @@ export default function KeuanganPage() {
         </Card>
       </div>
 
-      {/* Filters */}
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
@@ -662,30 +637,17 @@ export default function KeuanganPage() {
         </CardHeader>
         <CardContent>
           <div className="flex gap-2 mb-4">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setQuickDate("thisMonth")}
-            >
+            <Button variant="outline" size="sm" onClick={() => setQuickDate("thisMonth")}>
               This Month
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setQuickDate("lastMonth")}
-            >
+            <Button variant="outline" size="sm" onClick={() => setQuickDate("lastMonth")}>
               Last Month
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setQuickDate("thisYear")}
-            >
+            <Button variant="outline" size="sm" onClick={() => setQuickDate("thisYear")}>
               This Year
             </Button>
           </div>
-          
-          {/* Search Bar */}
+
           <div className="mb-4">
             <Label>Search</Label>
             <Input
@@ -750,7 +712,6 @@ export default function KeuanganPage() {
         </CardContent>
       </Card>
 
-      {/* Transactions Table */}
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
@@ -778,7 +739,7 @@ export default function KeuanganPage() {
           </div>
           {(!startDate || !endDate) && (
             <p className="text-xs text-gray-500 mt-2">
-             * Select Start Date and End Date to activate export
+              * Select Start Date and End Date to activate export
             </p>
           )}
         </CardHeader>
@@ -799,10 +760,7 @@ export default function KeuanganPage() {
               <TableBody>
                 {transactions.length === 0 ? (
                   <TableRow>
-                    <TableCell
-                      colSpan={7}
-                      className="text-center py-8 text-gray-500"
-                    >
+                    <TableCell colSpan={7} className="text-center py-8 text-gray-500">
                       No transactions found. Add your first transaction!
                     </TableCell>
                   </TableRow>
@@ -817,9 +775,7 @@ export default function KeuanganPage() {
                       </TableCell>
                       <TableCell>
                         <div>
-                          <p className="font-medium">
-                            {transaction.description}
-                          </p>
+                          <p className="font-medium">{transaction.description}</p>
                           {transaction.notes && (
                             <p className="text-xs text-gray-500 mt-1">
                               {transaction.notes}
@@ -828,16 +784,12 @@ export default function KeuanganPage() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <Badge variant="outline">
-                          {transaction.category.name}
-                        </Badge>
+                        <Badge variant="outline">{transaction.category.name}</Badge>
                       </TableCell>
                       <TableCell>
                         <Badge
                           variant={
-                            transaction.type === "INCOME"
-                              ? "default"
-                              : "destructive"
+                            transaction.type === "INCOME" ? "default" : "destructive"
                           }
                           className={
                             transaction.type === "INCOME"
@@ -889,16 +841,16 @@ export default function KeuanganPage() {
               </TableBody>
             </Table>
           </div>
-          
-          {/* Loading More Indicator */}
+
           {loadingMore && (
             <div className="flex justify-center items-center py-4">
               <Loader2 className="w-6 h-6 animate-spin text-primary" />
-              <span className="ml-2 text-sm text-muted-foreground">Loading more...</span>
+              <span className="ml-2 text-sm text-muted-foreground">
+                Loading more...
+              </span>
             </div>
           )}
-          
-          {/* End of Data Indicator */}
+
           {!loading && !loadingMore && !hasMore && transactions.length > 0 && (
             <div className="text-center py-4 text-sm text-muted-foreground">
               Semua data sudah ditampilkan ({transactions.length} dari {total} transaksi)
@@ -907,11 +859,7 @@ export default function KeuanganPage() {
         </CardContent>
       </Card>
 
-      {/* Transaction Dialog */}
-      <Dialog
-        open={isTransactionDialogOpen}
-        onOpenChange={setIsTransactionDialogOpen}
-      >
+      <Dialog open={isTransactionDialogOpen} onOpenChange={setIsTransactionDialogOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>
@@ -948,10 +896,7 @@ export default function KeuanganPage() {
                 <Select
                   value={transactionForm.categoryId}
                   onValueChange={(value) =>
-                    setTransactionForm({
-                      ...transactionForm,
-                      categoryId: value,
-                    })
+                    setTransactionForm({ ...transactionForm, categoryId: value })
                   }
                 >
                   <SelectTrigger>
@@ -978,10 +923,7 @@ export default function KeuanganPage() {
                   type="number"
                   value={transactionForm.amount}
                   onChange={(e) =>
-                    setTransactionForm({
-                      ...transactionForm,
-                      amount: e.target.value,
-                    })
+                    setTransactionForm({ ...transactionForm, amount: e.target.value })
                   }
                   placeholder="0"
                   required
@@ -995,10 +937,7 @@ export default function KeuanganPage() {
                   type="date"
                   value={transactionForm.date}
                   onChange={(e) =>
-                    setTransactionForm({
-                      ...transactionForm,
-                      date: e.target.value,
-                    })
+                    setTransactionForm({ ...transactionForm, date: e.target.value })
                   }
                   required
                 />
@@ -1027,10 +966,7 @@ export default function KeuanganPage() {
                 id="reference"
                 value={transactionForm.reference}
                 onChange={(e) =>
-                  setTransactionForm({
-                    ...transactionForm,
-                    reference: e.target.value,
-                  })
+                  setTransactionForm({ ...transactionForm, reference: e.target.value })
                 }
                 placeholder="e.g., Invoice #123, Payment ID"
               />
@@ -1042,10 +978,7 @@ export default function KeuanganPage() {
                 id="notes"
                 value={transactionForm.notes}
                 onChange={(e) =>
-                  setTransactionForm({
-                    ...transactionForm,
-                    notes: e.target.value,
-                  })
+                  setTransactionForm({ ...transactionForm, notes: e.target.value })
                 }
                 placeholder="Additional notes..."
                 rows={3}
@@ -1076,17 +1009,11 @@ export default function KeuanganPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Category Dialog */}
-      <Dialog
-        open={isCategoryDialogOpen}
-        onOpenChange={setIsCategoryDialogOpen}
-      >
+      <Dialog open={isCategoryDialogOpen} onOpenChange={setIsCategoryDialogOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Add Category</DialogTitle>
-            <DialogDescription>
-              Create a new income or expense category
-            </DialogDescription>
+            <DialogDescription>Create a new income or expense category</DialogDescription>
           </DialogHeader>
           <form onSubmit={handleSaveCategory} className="space-y-4">
             <div>
@@ -1094,9 +1021,7 @@ export default function KeuanganPage() {
               <Input
                 id="catName"
                 value={categoryForm.name}
-                onChange={(e) =>
-                  setCategoryForm({ ...categoryForm, name: e.target.value })
-                }
+                onChange={(e) => setCategoryForm({ ...categoryForm, name: e.target.value })}
                 placeholder="e.g., Subscription, Salary, Utilities"
                 required
               />
@@ -1126,10 +1051,7 @@ export default function KeuanganPage() {
                 id="catDescription"
                 value={categoryForm.description}
                 onChange={(e) =>
-                  setCategoryForm({
-                    ...categoryForm,
-                    description: e.target.value,
-                  })
+                  setCategoryForm({ ...categoryForm, description: e.target.value })
                 }
                 placeholder="Category description..."
                 rows={3}

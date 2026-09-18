@@ -1,4 +1,4 @@
-// app/api/payment/create/route.ts
+// src/app/api/payment/create/route.ts
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { createAnyPayOrder } from '@/lib/payment/anypay';
@@ -6,15 +6,32 @@ import crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
 
+interface AnyPayResult {
+  order_id?: string;
+  reference?: string;
+  payment_url?: string;
+  payment_reference?: string;
+  transid?: string;
+  [key: string]: unknown;
+}
+
+interface CreatePaymentBody {
+  invoiceId?: string;
+  orderNumber?: string;
+  amount?: number;
+  gateway?: string;
+  type?: 'voucher' | 'invoice';
+}
+
 export async function POST(request: Request) {
   console.log('[Payment Create] === REQUEST RECEIVED ===');
   try {
-    const body = await request.json();
+    const body = (await request.json()) as CreatePaymentBody;
     console.log('[Payment Create] Body:', JSON.stringify(body, null, 2));
 
     const { invoiceId, orderNumber, amount, gateway, type } = body;
 
-    // ========== VOUCHER ORDERS ==========
+    // VOUCHER
     if (type === 'voucher') {
       if (!orderNumber || !amount || !gateway) {
         return NextResponse.json(
@@ -31,15 +48,22 @@ export async function POST(request: Request) {
       if (!order) {
         return NextResponse.json({ error: 'Voucher order not found' }, { status: 404 });
       }
-
       if (order.status === 'PAID') {
         return NextResponse.json({ error: 'Order already paid' }, { status: 400 });
       }
 
-      return await createVoucherPayment(order, gateway);
+      return await createVoucherPayment(
+        {
+          id: order.id,
+          orderNumber: order.orderNumber,
+          customerPhone: order.customerPhone,
+          totalAmount: order.totalAmount,
+        },
+        gateway
+      );
     }
 
-    // ========== INVOICE PAYMENTS ==========
+    // INVOICE
     if (!invoiceId || !gateway) {
       return NextResponse.json(
         { error: 'Invoice ID and gateway are required' },
@@ -49,32 +73,22 @@ export async function POST(request: Request) {
 
     const invoice = await prisma.invoice.findUnique({
       where: { id: invoiceId },
-      include: {
-        user: { include: { profile: true } },
-      },
+      include: { user: { include: { profile: true } } },
     });
 
-    if (!invoice) {
-      return NextResponse.json({ error: 'Invoice not found' }, { status: 404 });
-    }
-
-    if (invoice.status === 'PAID') {
-      return NextResponse.json({ error: 'Invoice already paid' }, { status: 400 });
-    }
+    if (!invoice) return NextResponse.json({ error: 'Invoice not found' }, { status: 404 });
+    if (invoice.status === 'PAID') return NextResponse.json({ error: 'Invoice already paid' }, { status: 400 });
 
     const gatewayConfig = await prisma.paymentGateway.findUnique({
       where: { provider: gateway },
     });
 
     if (!gatewayConfig || !gatewayConfig.isActive) {
-      return NextResponse.json(
-        { error: 'Payment gateway not available' },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'Payment gateway not available' }, { status: 400 });
     }
 
     const customerPhone = invoice.user?.phone || invoice.customerPhone || '';
-    const orderId = `INV-${invoice.invoiceNumber}-${Date.now()}`;
+    const fallbackOrderId = `INV-${invoice.invoiceNumber}-${Date.now()}`;
 
     let paymentUrl = '';
     let transactionId = '';
@@ -82,30 +96,27 @@ export async function POST(request: Request) {
 
     if (gateway === 'anypay') {
       if (!gatewayConfig.anypayApiKey) {
-        return NextResponse.json(
-          { error: 'AnyPay API key is not configured' },
-          { status: 400 }
-        );
+        return NextResponse.json({ error: 'AnyPay API key is not configured' }, { status: 400 });
       }
 
       try {
         console.log('[Payment Create] Calling AnyPay for invoice:', invoice.invoiceNumber);
-        const result = await createAnyPayOrder(
+        const result = (await createAnyPayOrder(
           gatewayConfig.anypayApiKey,
           customerPhone,
           invoice.amount
-        );
+        )) as AnyPayResult;
 
-        gatewayOrderId = result.order_id;
-        transactionId = result.reference || result.order_id || orderId;
-        paymentUrl = result.payment_url;
+        gatewayOrderId = String(result.order_id ?? '');
+        transactionId = String(result.reference ?? result.order_id ?? fallbackOrderId);
+        paymentUrl = String(result.payment_url ?? '');
 
         await prisma.invoice.update({
           where: { id: invoice.id },
           data: { paymentToken: gatewayOrderId },
         });
 
-        console.log('[Payment Create] AnyPay success, gatewayOrderId:', gatewayOrderId);
+        console.log('[Payment Create] AnyPay success:', gatewayOrderId);
       } catch (error) {
         console.error('[Payment Create] AnyPay error:', error);
         return NextResponse.json(
@@ -117,13 +128,9 @@ export async function POST(request: Request) {
         );
       }
     } else {
-      return NextResponse.json(
-        { error: 'Unsupported payment gateway' },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'Unsupported payment gateway' }, { status: 400 });
     }
 
-    // Save payment record
     const payment = await prisma.payment.create({
       data: {
         id: crypto.randomUUID(),
@@ -135,7 +142,6 @@ export async function POST(request: Request) {
       },
     });
 
-    // Webhook log
     await prisma.webhookLog.create({
       data: {
         id: crypto.randomUUID(),
@@ -144,7 +150,11 @@ export async function POST(request: Request) {
         status: 'pending',
         transactionId: transactionId || null,
         amount: invoice.amount,
-        payload: JSON.stringify({ type: 'invoice', invoiceId: invoice.id, createdAt: new Date() }),
+        payload: JSON.stringify({
+          type: 'invoice',
+          invoiceId: invoice.id,
+          createdAt: new Date(),
+        }),
         response: JSON.stringify({ paymentUrl }),
         success: true,
       },
@@ -158,7 +168,7 @@ export async function POST(request: Request) {
       gatewayOrderId,
     });
   } catch (error) {
-    console.error('[Payment Create] FATAL ERROR:', error);
+    console.error('[Payment Create] FATAL:', error);
     return NextResponse.json(
       {
         error: 'Failed to create payment',
@@ -169,46 +179,46 @@ export async function POST(request: Request) {
   }
 }
 
-// ========== HELPER: VOUCHER PAYMENT ==========
-async function createVoucherPayment(order: any, gateway: string) {
-  console.log('[createVoucherPayment] Starting for order:', order.orderNumber);
+interface VoucherOrderLike {
+  id: string;
+  orderNumber: string;
+  customerPhone: string;
+  totalAmount: number;
+}
+
+async function createVoucherPayment(order: VoucherOrderLike, gateway: string) {
+  console.log('[createVoucherPayment] Starting:', order.orderNumber);
   try {
     const gatewayConfig = await prisma.paymentGateway.findUnique({
       where: { provider: gateway },
     });
 
     if (!gatewayConfig || !gatewayConfig.isActive) {
-      return NextResponse.json(
-        { error: 'Payment gateway not available' },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'Payment gateway not available' }, { status: 400 });
     }
 
     const customerPhone = order.customerPhone || '';
-    const orderId = `EVC-${order.orderNumber}-${Date.now()}`;
+    const fallbackOrderId = `EVC-${order.orderNumber}-${Date.now()}`;
 
     let paymentUrl = '';
     let gatewayOrderId = '';
 
     if (gateway === 'anypay') {
       if (!gatewayConfig.anypayApiKey) {
-        return NextResponse.json(
-          { error: 'AnyPay API key is not configured' },
-          { status: 400 }
-        );
+        return NextResponse.json({ error: 'AnyPay API key is not configured' }, { status: 400 });
       }
 
       try {
-        console.log('[createVoucherPayment] Calling AnyPay for voucher:', order.orderNumber);
-        const result = await createAnyPayOrder(
+        console.log('[createVoucherPayment] Calling AnyPay for:', order.orderNumber);
+        const result = (await createAnyPayOrder(
           gatewayConfig.anypayApiKey,
           customerPhone,
           order.totalAmount
-        );
+        )) as AnyPayResult;
 
-        paymentUrl = result.payment_url;
-        gatewayOrderId = result.order_id;
-        console.log('[createVoucherPayment] AnyPay success, gatewayOrderId:', gatewayOrderId);
+        paymentUrl = String(result.payment_url ?? '');
+        gatewayOrderId = String(result.order_id ?? fallbackOrderId);
+        console.log('[createVoucherPayment] AnyPay success:', gatewayOrderId);
       } catch (error) {
         console.error('[createVoucherPayment] AnyPay error:', error);
         return NextResponse.json(
@@ -220,13 +230,9 @@ async function createVoucherPayment(order: any, gateway: string) {
         );
       }
     } else {
-      return NextResponse.json(
-        { error: 'Unsupported payment gateway' },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'Unsupported payment gateway' }, { status: 400 });
     }
 
-    // Update order
     await prisma.voucherOrder.update({
       where: { id: order.id },
       data: {
@@ -235,7 +241,6 @@ async function createVoucherPayment(order: any, gateway: string) {
       },
     });
 
-    // Webhook log
     await prisma.webhookLog.create({
       data: {
         id: crypto.randomUUID(),
@@ -244,7 +249,12 @@ async function createVoucherPayment(order: any, gateway: string) {
         status: 'pending',
         transactionId: null,
         amount: order.totalAmount,
-        payload: JSON.stringify({ type: 'voucher', orderId: order.id, orderNumber: order.orderNumber, createdAt: new Date() }),
+        payload: JSON.stringify({
+          type: 'voucher',
+          orderId: order.id,
+          orderNumber: order.orderNumber,
+          createdAt: new Date(),
+        }),
         response: JSON.stringify({ paymentUrl }),
         success: true,
       },
@@ -257,7 +267,7 @@ async function createVoucherPayment(order: any, gateway: string) {
       gatewayOrderId,
     });
   } catch (error) {
-    console.error('[createVoucherPayment] FATAL ERROR:', error);
+    console.error('[createVoucherPayment] FATAL:', error);
     return NextResponse.json(
       {
         error: 'Failed to create voucher payment',

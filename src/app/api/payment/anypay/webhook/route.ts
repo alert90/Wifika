@@ -135,12 +135,20 @@ export async function POST(request: NextRequest) {
         where: { id: order.id },
         data: {
           status: 'PAID',
+          paidAt: new Date(),
           paymentToken: transactionId || order.paymentToken,
         },
       });
 
-      // 🔔 TODO: activate the customer's voucher / hotspot access here.
       console.log('[AnyPay Webhook] ✅ Order PAID:', orderReference);
+
+      void import('@/lib/services/provisionVoucherOrder')
+    .then(({ provisionVoucherOrder }) =>
+      provisionVoucherOrder(order.id).catch((e) =>
+        console.error('[AnyPay Webhook] Provision failed:', e)
+      )
+    );
+
     } else {
       await prisma.voucherOrder.update({
         where: { id: order.id },

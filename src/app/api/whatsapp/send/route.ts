@@ -1,5 +1,8 @@
+// src/app/api/whatsapp/send/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { WhatsAppService } from '@/lib/whatsapp';
+
+export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest) {
   try {
@@ -12,30 +15,27 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Use WhatsApp failover service
     const result = await WhatsAppService.sendMessage({ phone, message });
 
-    if (result.success) {
-      return NextResponse.json({
-        success: true,
-        provider: result.provider,
-        attempts: result.attempts,
-        response: result.response,
-      });
-    } else {
+    const lastFailure = result.attempts?.[result.attempts.length - 1];
+
+    if (!result.success) {
       return NextResponse.json(
         {
           success: false,
-          error: result.error || 'All providers failed',
+          error: lastFailure?.error || 'All providers failed',
           attempts: result.attempts,
         },
         { status: 500 }
       );
     }
-  } catch (error: any) {
-    console.error('Send API error:', error);
+
+    return NextResponse.json(result);
+  } catch (error) {
+    console.error('Send WhatsApp error:', error);
+    const message = error instanceof Error ? error.message : 'Unknown error';
     return NextResponse.json(
-      { success: false, error: error.message || 'Failed to send message' },
+      { success: false, error: message },
       { status: 500 }
     );
   }

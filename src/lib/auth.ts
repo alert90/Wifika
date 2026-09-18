@@ -1,3 +1,4 @@
+// src/lib/auth.ts
 import { NextAuthOptions } from 'next-auth';
 import CredentialsProvider from 'next-auth/providers/credentials';
 import bcrypt from 'bcryptjs';
@@ -16,38 +17,25 @@ export const authOptions: NextAuthOptions = {
           throw new Error('Username and password are required');
         }
 
-        // Find user
         const user = await prisma.adminUser.findUnique({
           where: { username: credentials.username },
         });
 
-        if (!user) {
-          throw new Error('Invalid username or password');
-        }
+        if (!user) throw new Error('Invalid username or password');
+        if (!user.isActive) throw new Error('Account is inactive');
 
-        // Check if user is active
-        if (!user.isActive) {
-          throw new Error('Account is inactive');
-        }
-
-        // Verify password
         const isValid = await bcrypt.compare(credentials.password, user.password);
+        if (!isValid) throw new Error('Invalid username or password');
 
-        if (!isValid) {
-          throw new Error('Invalid username or password');
-        }
-
-        // Update last login
         await prisma.adminUser.update({
           where: { id: user.id },
           data: { lastLogin: new Date() },
         });
 
-        // Return user data (without password)
         return {
           id: user.id,
           username: user.username,
-          email: user.email,
+          email: user.email ?? null,
           name: user.name,
           role: user.role,
         };
@@ -56,20 +44,18 @@ export const authOptions: NextAuthOptions = {
   ],
   callbacks: {
     async jwt({ token, user }) {
-      // Add user data to token on sign in
       if (user) {
         token.id = user.id;
-        token.username = (user as any).username;
-        token.role = (user as any).role;
+        token.username = user.username;
+        token.role = user.role;
       }
       return token;
     },
     async session({ session, token }) {
-      // Add user data to session
       if (token && session.user) {
-        (session.user as any).id = token.id;
-        (session.user as any).username = token.username;
-        (session.user as any).role = token.role;
+        session.user.id = token.id;
+        session.user.username = token.username;
+        session.user.role = token.role;
       }
       return session;
     },
@@ -80,7 +66,7 @@ export const authOptions: NextAuthOptions = {
   },
   session: {
     strategy: 'jwt',
-    maxAge: 30 * 24 * 60 * 60, // 30 days
+    maxAge: 30 * 24 * 60 * 60,
   },
   secret: process.env.NEXTAUTH_SECRET || 'skylink-radius-secret-change-in-production',
 };

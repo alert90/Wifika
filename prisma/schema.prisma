@@ -88,11 +88,15 @@ model hotspotVoucher {
   orderId      String?
   order        voucherOrder?           @relation(fields: [orderId], references: [id])
   profile      hotspotProfile          @relation(fields: [profileId], references: [id])
+  soldToPhone  String?
+  soldAt       DateTime?
 
   @@index([batchCode])
   @@index([orderId])
   @@index([profileId])
   @@index([status])
+  @@index([soldToPhone])
+  @@index([soldAt])
   @@map("hotspot_vouchers")
 }
 
@@ -438,7 +442,14 @@ model voucherOrder {
   updatedAt     DateTime              @updatedAt
   vouchers      hotspotVoucher[]
   profile       hotspotProfile        @relation(fields: [profileId], references: [id])
-
+  agentId         String?
+  linkedVoucherId String?
+  clientIp        String?
+  clientMac       String?
+  provisionedAt   DateTime?
+  
+  @@index([agentId])
+  @@index([provisionedAt])
   @@index([orderNumber])
   @@index([profileId])
   @@index([status])
@@ -563,6 +574,8 @@ model customerSession {
   id        String    @id @default(cuid())
   userId    String
   phone     String
+  clientIp  String?
+  clientMac String?
   otpCode   String?
   otpExpiry DateTime?
   token     String?   @unique

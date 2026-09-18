@@ -1,10 +1,10 @@
-"use client"
-import { showSuccess, showError, showConfirm, showToast } from '@/lib/sweetalert';
+"use client";
 
-import { useEffect, useState } from "react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
+import { useCallback, useEffect, useState } from "react";
+import { showSuccess, showError } from "@/lib/sweetalert";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import {
   Table,
   TableBody,
@@ -12,123 +12,154 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/components/ui/table"
-import { RefreshCw, Play, Clock } from "lucide-react"
-import { formattoNairobi } from "@/lib/utils/dateUtils"
+} from "@/components/ui/table";
+import { RefreshCw, Play, Clock } from "lucide-react";
+import { formattoNairobi } from "@/lib/utils/dateUtils";
 
-interface CronHistory {
-  id: string
-  type: string
-  startedAt: string
-  completedAt?: string
-  status: 'running' | 'success' | 'error'
-  result?: string
-  error?: string
+interface CronHistoryItem {
+  id: string;
+  type: string;
+  status: "running" | "success" | "error";
+  startedAt: string | Date;
+  completedAt?: string | Date | null;
+  duration?: number | null;
+  result?: string | null;
+  error?: string | null;
+}
+
+interface JobRecentHistory {
+  id: string;
+  status: "running" | "success" | "error";
+  startedAt: string;
+  completedAt?: string | null;
+  duration?: number | null;
+  result?: string | null;
+  error?: string | null;
+}
+
+interface CronJob {
+  type: string;
+  name: string;
+  description: string;
+  scheduleLabel: string;
+  enabled: boolean;
+  health: "healthy" | "degraded" | "error";
+  lastRun?: { startedAt: string; duration?: number };
+  nextRun: string;
+  recentHistory?: JobRecentHistory[];
 }
 
 export default function CronSettingsPage() {
-  const [loading, setLoading] = useState(true)
-  const [triggering, setTriggering] = useState<string | null>(null)
-  const [history, setHistory] = useState<CronHistory[]>([])
-  const [selectedType, setSelectedType] = useState<string>('all')
+  const [loading, setLoading] = useState(true);
+  const [triggering, setTriggering] = useState<string | null>(null);
+  const [jobs, setJobs] = useState<CronJob[]>([]);
+  const [history, setHistory] = useState<CronHistoryItem[]>([]);
+  const [selectedType, setSelectedType] = useState<string>("all");
 
-  useEffect(() => {
-    loadHistory()
-    // Auto-refresh every 10 seconds
-    const interval = setInterval(loadHistory, 10000)
-    return () => clearInterval(interval)
-  }, [])
-
-  const [jobs, setJobs] = useState<any[]>([])
-
-  const loadHistory = async () => {
+  const loadHistory = useCallback(async () => {
     try {
-      const res = await fetch('/api/cron/status')
-      const data = await res.json()
+      const res = await fetch("/api/cron/status");
+      const data = await res.json();
       if (data.success) {
-        setJobs(data.jobs || [])
-        
-        // Flatten all recent history from all jobs
-        const allHistory = data.jobs.flatMap((job: any) => 
-          (job.recentHistory || []).map((h: any) => ({
+        const jobList: CronJob[] = data.jobs || [];
+        setJobs(jobList);
+
+        const allHistory: CronHistoryItem[] = jobList.flatMap((job) =>
+          (job.recentHistory || []).map((h) => ({
             id: h.id,
             type: job.type,
-            startedAt: h.startedAt,
-            completedAt: h.completedAt,
             status: h.status,
-            result: h.result,
-            error: h.error,
+            startedAt: h.startedAt,
+            completedAt: h.completedAt ?? null,
+            duration: h.duration ?? null,
+            result: h.result ?? null,
+            error: h.error ?? null,
           }))
         );
-        
-        // Sort by startedAt desc and take last 50
+
         const sortedHistory = allHistory
-          .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())
+          .sort(
+            (a, b) =>
+              new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()
+          )
           .slice(0, 50);
-        
+
         setHistory(sortedHistory);
       }
     } catch (error) {
-      console.error('Load history error:', error)
+      console.error("Load history error:", error);
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (cancelled) return;
+      await loadHistory();
+    };
+    void run();
+    const interval = setInterval(() => {
+      void loadHistory();
+    }, 10000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [loadHistory]);
 
   const triggerManual = async (jobType: string) => {
-    setTriggering(jobType)
+    setTriggering(jobType);
     try {
-      const res = await fetch('/api/cron', { 
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: jobType })
-      })
-      const data = await res.json()
-      
+      const res = await fetch("/api/cron", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: jobType }),
+      });
+      const data = await res.json();
+
       if (data.success) {
-        if (jobType === 'voucher_sync') {
-          await showSuccess(`Success! Synced ${data.synced} voucher(s)`)
-        } else if (jobType === 'agent_sales') {
-          await showSuccess(`Success! Recorded ${data.recorded} sales`)
-        } else if (jobType === 'invoice_generate') {
-          await showSuccess(`Success! Generated ${data.generated} invoices, skipped ${data.skipped}`)
-        } else if (jobType === 'invoice_reminder') {
-          await showSuccess(`Success! Sent ${data.sent} reminders, skipped ${data.skipped}`)
-        } else if (jobType === 'auto_isolir') {
-          await showSuccess(`Success! Isolated ${data.isolated} expired user(s)`)
+        if (jobType === "voucher_sync") {
+          await showSuccess(`Success! Synced ${data.synced} voucher(s)`);
+        } else if (jobType === "agent_sales") {
+          await showSuccess(`Success! Recorded ${data.recorded} sales`);
+        } else if (jobType === "invoice_generate") {
+          await showSuccess(
+            `Success! Generated ${data.generated} invoices, skipped ${data.skipped}`
+          );
+        } else if (jobType === "invoice_reminder") {
+          await showSuccess(
+            `Success! Sent ${data.sent} reminders, skipped ${data.skipped}`
+          );
+        } else if (jobType === "auto_isolir") {
+          await showSuccess(`Success! Isolated ${data.isolated} expired user(s)`);
         } else {
-          await showSuccess('Job completed successfully!')
+          await showSuccess("Job completed successfully!");
         }
       } else {
-        await showError('Failed: ' + data.error)
+        await showError("Failed: " + data.error);
       }
-      
-      loadHistory()
+
+      void loadHistory();
     } catch (error) {
-      console.error('Manual trigger error:', error)
-      await showError('Failed to trigger job')
+      console.error("Manual trigger error:", error);
+      await showError("Failed to trigger job");
     } finally {
-      setTriggering(null)
+      setTriggering(null);
     }
-  }
+  };
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold">Cron Jobs</h1>
-          <p className="text-gray-500 mt-1">
-            Background tasks and scheduled jobs
-          </p>
+          <p className="text-gray-500 mt-1">Background tasks and scheduled jobs</p>
         </div>
         <div className="flex gap-2">
-          <Button
-            onClick={loadHistory}
-            variant="outline"
-            size="sm"
-            disabled={loading}
-          >
-            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+          <Button onClick={loadHistory} variant="outline" size="sm" disabled={loading}>
+            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
             Refresh
           </Button>
         </div>
@@ -142,9 +173,7 @@ export default function CronSettingsPage() {
                 <Clock className="h-4 w-4" />
                 {job.name}
               </CardTitle>
-              <CardDescription className="text-xs">
-                {job.description}
-              </CardDescription>
+              <CardDescription className="text-xs">{job.description}</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="space-y-3">
@@ -156,13 +185,21 @@ export default function CronSettingsPage() {
                   <div>
                     <span className="text-gray-500">Status:</span>
                     <div>
-                      <Badge className={
-                        job.health === 'healthy' ? 'bg-green-100 text-green-800 text-xs' :
-                        job.health === 'degraded' ? 'bg-yellow-100 text-yellow-800 text-xs' :
-                        'bg-red-100 text-red-800 text-xs'
-                      }>
-                        {job.health === 'healthy' ? '🟢' : job.health === 'degraded' ? '🟡' : '🔴'} 
-                        {job.enabled ? 'Active' : 'Disabled'}
+                      <Badge
+                        className={
+                          job.health === "healthy"
+                            ? "bg-green-100 text-green-800 text-xs"
+                            : job.health === "degraded"
+                            ? "bg-yellow-100 text-yellow-800 text-xs"
+                            : "bg-red-100 text-red-800 text-xs"
+                        }
+                      >
+                        {job.health === "healthy"
+                          ? "🟢"
+                          : job.health === "degraded"
+                          ? "🟡"
+                          : "🔴"}{" "}
+                        {job.enabled ? "Active" : "Disabled"}
                       </Badge>
                     </div>
                   </div>
@@ -171,7 +208,7 @@ export default function CronSettingsPage() {
                   <div>
                     <span className="text-gray-500">Last Run:</span>
                     <div className="font-medium">
-                      {job.lastRun ? formattoNairobi(job.lastRun.startedAt) : 'Never'}
+                      {job.lastRun ? formattoNairobi(job.lastRun.startedAt) : "Never"}
                     </div>
                   </div>
                   <div>
@@ -183,7 +220,9 @@ export default function CronSettingsPage() {
                   {job.lastRun?.duration && (
                     <div>
                       <span className="text-gray-500">Duration:</span>
-                      <div className="font-medium">{(job.lastRun.duration / 1000).toFixed(2)}s</div>
+                      <div className="font-medium">
+                        {(job.lastRun.duration / 1000).toFixed(2)}s
+                      </div>
                     </div>
                   )}
                 </div>
@@ -194,7 +233,7 @@ export default function CronSettingsPage() {
                   disabled={triggering !== null}
                 >
                   <Play className="h-3 w-3 mr-2" />
-                  {triggering === job.type ? 'Running...' : 'Trigger Now'}
+                  {triggering === job.type ? "Running..." : "Trigger Now"}
                 </Button>
               </div>
             </CardContent>
@@ -207,14 +246,12 @@ export default function CronSettingsPage() {
           <div className="flex items-center justify-between">
             <div>
               <CardTitle>Execution History</CardTitle>
-              <CardDescription>
-                Last 50 executions
-              </CardDescription>
+              <CardDescription>Last 50 executions</CardDescription>
             </div>
             <div className="flex gap-2 flex-wrap">
               <Button
-                onClick={() => setSelectedType('all')}
-                variant={selectedType === 'all' ? 'default' : 'outline'}
+                onClick={() => setSelectedType("all")}
+                variant={selectedType === "all" ? "default" : "outline"}
                 size="sm"
               >
                 All
@@ -223,7 +260,7 @@ export default function CronSettingsPage() {
                 <Button
                   key={job.type}
                   onClick={() => setSelectedType(job.type)}
-                  variant={selectedType === job.type ? 'default' : 'outline'}
+                  variant={selectedType === job.type ? "default" : "outline"}
                   size="sm"
                 >
                   {job.name}
@@ -246,24 +283,38 @@ export default function CronSettingsPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {(selectedType === 'all' ? history : history.filter(h => h.type === selectedType)).length === 0 ? (
+                {(selectedType === "all"
+                  ? history
+                  : history.filter((h) => h.type === selectedType)
+                ).length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={6} className="text-center text-gray-500 py-8">
                       No execution history yet
                     </TableCell>
                   </TableRow>
                 ) : (
-                  (selectedType === 'all' ? history : history.filter(h => h.type === selectedType)).map((item) => {
-                    const duration = item.completedAt 
-                      ? Math.round((new Date(item.completedAt).getTime() - new Date(item.startedAt).getTime()) / 1000)
-                      : null
+                  (selectedType === "all"
+                    ? history
+                    : history.filter((h) => h.type === selectedType)
+                  ).map((item) => {
+                    const duration = item.completedAt
+                      ? Math.round(
+                          (new Date(item.completedAt).getTime() -
+                            new Date(item.startedAt).getTime()) /
+                            1000
+                        )
+                      : null;
 
                     const typeLabels: Record<string, string> = {
-                      voucher_sync: 'Voucher Sync',
-                      agent_sales: 'Agent Sales',
-                      invoice_generate: 'Invoice Gen',
-                      invoice_reminder: 'Reminders'
-                    }
+                      voucher_sync: "Voucher Sync",
+                      agent_sales: "Agent Sales",
+                      invoice_generate: "Invoice Gen",
+                      invoice_reminder: "Reminders",
+                      auto_isolir: "Auto Isolir",
+                      notification_check: "Notification Check",
+                      telegram_backup: "Telegram Backup",
+                      telegram_health: "Telegram Health",
+                    };
 
                     return (
                       <TableRow key={item.id}>
@@ -276,31 +327,31 @@ export default function CronSettingsPage() {
                           {formattoNairobi(item.startedAt)}
                         </TableCell>
                         <TableCell className="text-sm">
-                          {item.completedAt ? formattoNairobi(item.completedAt) : '-'}
+                          {item.completedAt ? formattoNairobi(item.completedAt) : "-"}
                         </TableCell>
                         <TableCell className="text-sm">
-                          {duration ? `${duration}s` : '-'}
+                          {duration ? `${duration}s` : "-"}
                         </TableCell>
                         <TableCell>
-                          {item.status === 'success' && (
+                          {item.status === "success" && (
                             <Badge className="bg-green-100 text-green-800">Success</Badge>
                           )}
-                          {item.status === 'error' && (
+                          {item.status === "error" && (
                             <Badge className="bg-red-100 text-red-800">Error</Badge>
                           )}
-                          {item.status === 'running' && (
+                          {item.status === "running" && (
                             <Badge className="bg-blue-100 text-blue-800">Running</Badge>
                           )}
                         </TableCell>
                         <TableCell className="text-sm">
-                          {item.status === 'success' && item.result}
-                          {item.status === 'error' && (
+                          {item.status === "success" && item.result}
+                          {item.status === "error" && (
                             <span className="text-red-600">{item.error}</span>
                           )}
-                          {item.status === 'running' && 'In progress...'}
+                          {item.status === "running" && "In progress..."}
                         </TableCell>
                       </TableRow>
-                    )
+                    );
                   })
                 )}
               </TableBody>
@@ -309,5 +360,5 @@ export default function CronSettingsPage() {
         </CardContent>
       </Card>
     </div>
-  )
+  );
 }

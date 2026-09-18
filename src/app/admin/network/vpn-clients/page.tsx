@@ -1,7 +1,7 @@
 'use client';
-import { showSuccess, showError, showConfirm, showToast } from '@/lib/sweetalert';
 
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { showConfirm } from '@/lib/sweetalert';
 import {
   Shield,
   Plus,
@@ -10,7 +10,6 @@ import {
   Copy,
   CheckCircle2,
   Eye,
-  XCircle,
 } from 'lucide-react';
 
 interface VpnClient {
@@ -26,6 +25,12 @@ interface VpnClient {
   createdAt: string;
 }
 
+interface VpnServer {
+  host?: string;
+  subnet?: string;
+  [key: string]: unknown;
+}
+
 interface Credentials {
   server: string;
   username: string;
@@ -34,13 +39,17 @@ interface Credentials {
   vpnIp: string;
 }
 
+interface ClientsResponse {
+  clients: VpnClient[];
+  vpnServer: VpnServer | null;
+}
+
 export default function VpnClientsPage() {
   const [loading, setLoading] = useState(true);
   const [clients, setClients] = useState<VpnClient[]>([]);
-  const [vpnServer, setVpnServer] = useState<any>(null);
+  const [vpnServer, setVpnServer] = useState<VpnServer | null>(null);
   const [statusMap, setStatusMap] = useState<Record<string, boolean>>({});
 
-  // Dialog states
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [deleteClientId, setDeleteClientId] = useState<string | null>(null);
@@ -48,70 +57,27 @@ export default function VpnClientsPage() {
   const [credentials, setCredentials] = useState<Credentials | null>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [selectedVpnType, setSelectedVpnType] = useState('l2tp');
-  const [selectedClient, setSelectedClient] = useState<VpnClient | null>(null);
 
   const [formData, setFormData] = useState({
     name: '',
     description: '',
   });
 
-  useEffect(() => {
-    loadClientsAndStatus();
-
-    // Auto-refresh status every 30 seconds
-    const interval = setInterval(() => {
-      checkClientsStatus();
-    }, 30000);
-
-    return () => clearInterval(interval);
-  }, []);
-
-  const loadClientsAndStatus = async () => {
+  const loadClients = useCallback(async () => {
     try {
       const response = await fetch('/api/network/vpn-clients');
-      const data = await response.json();
-      const loadedClients = data.clients || [];
-      setClients(loadedClients);
-      setVpnServer(data.vpnServer);
-      setLoading(false);
-
-      // Immediately check status after loading clients
-      if (loadedClients.length > 0) {
-        const clientIds = loadedClients.map((c: VpnClient) => c.id);
-        const statusResponse = await fetch('/api/network/vpn-clients/status', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ clientIds }),
-        });
-
-        if (statusResponse.ok) {
-          const statusData = await statusResponse.json();
-          setStatusMap(statusData.statusMap || {});
-        }
-      }
-    } catch (error) {
-      console.error('Load clients error:', error);
-      setLoading(false);
-    }
-  };
-
-  const loadClients = async () => {
-    try {
-      const response = await fetch('/api/network/vpn-clients');
-      const data = await response.json();
+      const data: ClientsResponse = await response.json();
       setClients(data.clients || []);
       setVpnServer(data.vpnServer);
     } catch (error) {
       console.error('Load clients error:', error);
     }
-  };
+  }, []);
 
-  const checkClientsStatus = async () => {
-    if (clients.length === 0) return;
-    if (!confirmed) return;
-
+  const checkClientsStatus = useCallback(async (clientList: VpnClient[]) => {
+    if (clientList.length === 0) return;
     try {
-      const clientIds = clients.map((c) => c.id);
+      const clientIds = clientList.map((c) => c.id);
       const response = await fetch('/api/network/vpn-clients/status', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -125,7 +91,30 @@ export default function VpnClientsPage() {
     } catch (error) {
       console.error('Check status error:', error);
     }
-  };
+  }, []);
+
+  const loadClientsAndStatus = useCallback(async () => {
+    try {
+      const response = await fetch('/api/network/vpn-clients');
+      const data: ClientsResponse = await response.json();
+      const loadedClients = data.clients || [];
+      setClients(loadedClients);
+      setVpnServer(data.vpnServer);
+      setLoading(false);
+      await checkClientsStatus(loadedClients);
+    } catch (error) {
+      console.error('Load clients error:', error);
+      setLoading(false);
+    }
+  }, [checkClientsStatus]);
+
+  useEffect(() => {
+    void loadClientsAndStatus();
+    const interval = setInterval(() => {
+      void loadClientsAndStatus();
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [loadClientsAndStatus]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -142,12 +131,9 @@ export default function VpnClientsPage() {
         const data = await response.json();
         setIsDialogOpen(false);
         setFormData({ name: '', description: '' });
-
-        // Show credentials modal
         setCredentials(data.credentials);
         setShowCredentials(true);
-
-        loadClients();
+        await loadClients();
       } else {
         const error = await response.json();
         alert('Failed: ' + error.error);
@@ -162,6 +148,7 @@ export default function VpnClientsPage() {
 
   const handleDelete = async () => {
     if (!deleteClientId) return;
+    const confirmed = await showConfirm('Are you sure you want to delete this VPN client?');
     if (!confirmed) return;
 
     try {
@@ -170,7 +157,7 @@ export default function VpnClientsPage() {
       });
 
       if (response.ok) {
-        loadClients();
+        await loadClients();
       }
     } catch (error) {
       console.error('Delete client error:', error);
@@ -180,7 +167,6 @@ export default function VpnClientsPage() {
   };
 
   const handleViewConfig = (client: VpnClient) => {
-    setSelectedClient(client);
     setSelectedVpnType(client.vpnType);
     setCredentials({
       server: vpnServer?.host || '',
@@ -193,7 +179,7 @@ export default function VpnClientsPage() {
   };
 
   const copyToClipboard = (text: string, field: string) => {
-    navigator.clipboard.writeText(text);
+    void navigator.clipboard.writeText(text);
     setCopiedField(field);
     setTimeout(() => setCopiedField(null), 2000);
   };
@@ -207,17 +193,16 @@ export default function VpnClientsPage() {
       });
 
       if (response.ok) {
-        loadClients();
+        await loadClients();
       }
     } catch (error) {
       console.error('Toggle RADIUS server error:', error);
     }
   };
 
-  const generateMikroTikScript = () => {
+  const generateMikroTikScript = (): string => {
     if (!credentials) return '';
-    
-    // Get subnet from VPN server config
+
     const subnet = vpnServer?.subnet || '10.20.30.0/24';
     const subnetParts = subnet.split('/');
     const baseIp = subnetParts[0].split('.');
@@ -235,7 +220,9 @@ export default function VpnClientsPage() {
 
 # Add static route for VPN subnet
 /ip route add dst-address=${subnetCidr} gateway=${gateway} comment="SKYLINK VPN Route"`;
-    } else if (selectedVpnType === 'sstp') {
+    }
+
+    if (selectedVpnType === 'sstp') {
       return `/interface sstp-client add \\
   connect-to=${credentials.server} \\
   user=${credentials.username} \\
@@ -246,7 +233,9 @@ export default function VpnClientsPage() {
 
 # Add static route for VPN subnet
 /ip route add dst-address=${subnetCidr} gateway=${gateway} comment="SKYLINK VPN Route"`;
-    } else if (selectedVpnType === 'pptp') {
+    }
+
+    if (selectedVpnType === 'pptp') {
       return `/interface pptp-client add \\
   connect-to=${credentials.server} \\
   user=${credentials.username} \\
@@ -271,7 +260,6 @@ export default function VpnClientsPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold bg-gradient-to-r from-gray-900 to-gray-600 dark:from-white dark:to-gray-300 bg-clip-text text-transparent">
@@ -291,7 +279,6 @@ export default function VpnClientsPage() {
         </button>
       </div>
 
-      {/* Stats */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="bg-white/60 dark:bg-gray-950/60 backdrop-blur-xl rounded-2xl border border-gray-200/50 dark:border-gray-800/50 p-6 shadow-xl">
           <div className="flex items-center justify-between">
@@ -312,9 +299,7 @@ export default function VpnClientsPage() {
         <div className="bg-white/60 dark:bg-gray-950/60 backdrop-blur-xl rounded-2xl border border-gray-200/50 dark:border-gray-800/50 p-6 shadow-xl">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-600 dark:text-gray-400">
-                Online
-              </p>
+              <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Online</p>
               <p className="text-2xl font-bold text-gray-900 dark:text-white mt-1">
                 {Object.values(statusMap).filter(Boolean).length}
               </p>
@@ -328,12 +313,8 @@ export default function VpnClientsPage() {
         <div className="bg-white/60 dark:bg-gray-950/60 backdrop-blur-xl rounded-2xl border border-gray-200/50 dark:border-gray-800/50 p-6 shadow-xl">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-600 dark:text-gray-400">
-                VPN Type
-              </p>
-              <p className="text-2xl font-bold text-gray-900 dark:text-white mt-1">
-                L2TP
-              </p>
+              <p className="text-sm font-medium text-gray-600 dark:text-gray-400">VPN Type</p>
+              <p className="text-2xl font-bold text-gray-900 dark:text-white mt-1">L2TP</p>
             </div>
             <div className="w-12 h-12 bg-purple-50 dark:bg-purple-900/20 rounded-xl flex items-center justify-center">
               <Shield className="w-6 h-6 text-purple-600 dark:text-purple-400" />
@@ -342,7 +323,6 @@ export default function VpnClientsPage() {
         </div>
       </div>
 
-      {/* Clients Table */}
       <div className="bg-white/60 dark:bg-gray-950/60 backdrop-blur-xl rounded-2xl border border-gray-200/50 dark:border-gray-800/50 shadow-xl overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full">
@@ -371,7 +351,10 @@ export default function VpnClientsPage() {
             <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
               {clients.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-12 text-center text-gray-500 dark:text-gray-400">
+                  <td
+                    colSpan={6}
+                    className="px-6 py-12 text-center text-gray-500 dark:text-gray-400"
+                  >
                     No VPN clients yet. Add your first client to get started.
                   </td>
                 </tr>
@@ -411,7 +394,9 @@ export default function VpnClientsPage() {
                         <input
                           type="checkbox"
                           checked={client.isRadiusServer || false}
-                          onChange={(e) => handleToggleRadiusServer(client.id, e.target.checked)}
+                          onChange={(e) =>
+                            handleToggleRadiusServer(client.id, e.target.checked)
+                          }
                           className="w-4 h-4 text-blue-600 rounded"
                         />
                         <span className="text-xs text-gray-600 dark:text-gray-400">
@@ -460,7 +445,6 @@ export default function VpnClientsPage() {
         </div>
       </div>
 
-      {/* Add Client Dialog */}
       {isDialogOpen && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white dark:bg-gray-950 rounded-2xl max-w-md w-full p-6 shadow-2xl">
@@ -484,9 +468,6 @@ export default function VpnClientsPage() {
                   placeholder="Branch-Jakarta"
                   required
                 />
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                  This will be used to generate username
-                </p>
               </div>
 
               <div>
@@ -496,7 +477,9 @@ export default function VpnClientsPage() {
                 <input
                   type="text"
                   value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                  onChange={(e) =>
+                    setFormData({ ...formData, description: e.target.value })
+                  }
                   className="w-full px-4 py-2.5 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
                   placeholder="FreeRADIUS Server"
                 />
@@ -530,7 +513,6 @@ export default function VpnClientsPage() {
         </div>
       )}
 
-      {/* Credentials Modal */}
       {showCredentials && credentials && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white dark:bg-gray-950 rounded-2xl max-w-3xl w-full p-6 shadow-2xl my-8">
@@ -542,125 +524,105 @@ export default function VpnClientsPage() {
             </p>
 
             <div className="space-y-4">
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4 p-4 bg-gray-50 dark:bg-gray-900 rounded-xl">
-                  <div>
-                    <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
-                      Server
-                    </label>
-                    <p className="font-mono text-sm text-gray-900 dark:text-white">
-                      {credentials.server}
-                    </p>
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
-                      VPN IP
-                    </label>
-                    <p className="font-mono text-sm text-gray-900 dark:text-white">
-                      {credentials.vpnIp}
-                    </p>
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
-                      Username
-                    </label>
-                    <div className="flex items-center gap-2">
-                      <p className="font-mono text-sm text-gray-900 dark:text-white">
-                        {credentials.username}
-                      </p>
-                      <button
-                        onClick={() => copyToClipboard(credentials.username, 'username')}
-                        className="p-1 hover:bg-gray-200 dark:hover:bg-gray-800 rounded"
-                      >
-                        {copiedField === 'username' ? (
-                          <CheckCircle2 className="w-3 h-3 text-green-600" />
-                        ) : (
-                          <Copy className="w-3 h-3" />
-                        )}
-                      </button>
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
-                      Password
-                    </label>
-                    <div className="flex items-center gap-2">
-                      <p className="font-mono text-sm text-gray-900 dark:text-white">
-                        {credentials.password}
-                      </p>
-                      <button
-                        onClick={() => copyToClipboard(credentials.password, 'password')}
-                        className="p-1 hover:bg-gray-200 dark:hover:bg-gray-800 rounded"
-                      >
-                        {copiedField === 'password' ? (
-                          <CheckCircle2 className="w-3 h-3 text-green-600" />
-                        ) : (
-                          <Copy className="w-3 h-3" />
-                        )}
-                      </button>
-                    </div>
-                  </div>
-                  {selectedVpnType === 'l2tp' && (
-                    <div className="col-span-2">
-                      <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
-                        IPSec Secret
-                      </label>
-                      <div className="flex items-center gap-2">
-                        <p className="font-mono text-sm text-gray-900 dark:text-white">
-                          {credentials.ipsecSecret}
-                        </p>
-                        <button
-                          onClick={() => copyToClipboard(credentials.ipsecSecret, 'secret')}
-                          className="p-1 hover:bg-gray-200 dark:hover:bg-gray-800 rounded"
-                        >
-                          {copiedField === 'secret' ? (
-                            <CheckCircle2 className="w-3 h-3 text-green-600" />
-                          ) : (
-                            <Copy className="w-3 h-3" />
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* VPN Type Selector */}
-                <div className="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-xl border border-blue-200 dark:border-blue-800">
-                  <label className="block text-sm font-medium text-gray-900 dark:text-white mb-3">
-                    Select VPN Type for MikroTik Script
+              <div className="grid grid-cols-2 gap-4 p-4 bg-gray-50 dark:bg-gray-900 rounded-xl">
+                <div>
+                  <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
+                    Server
                   </label>
-                  <div className="flex gap-2">
+                  <p className="font-mono text-sm text-gray-900 dark:text-white">
+                    {credentials.server}
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
+                    VPN IP
+                  </label>
+                  <p className="font-mono text-sm text-gray-900 dark:text-white">
+                    {credentials.vpnIp}
+                  </p>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
+                    Username
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <p className="font-mono text-sm text-gray-900 dark:text-white">
+                      {credentials.username}
+                    </p>
                     <button
-                      onClick={() => setSelectedVpnType('l2tp')}
-                      className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                        selectedVpnType === 'l2tp'
-                          ? 'bg-blue-600 text-white shadow-lg'
-                          : 'bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800'
-                      }`}
+                      onClick={() => copyToClipboard(credentials.username, 'username')}
+                      className="p-1 hover:bg-gray-200 dark:hover:bg-gray-800 rounded"
                     >
-                      L2TP
-                    </button>
-                    <button
-                      onClick={() => setSelectedVpnType('sstp')}
-                      className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                        selectedVpnType === 'sstp'
-                          ? 'bg-blue-600 text-white shadow-lg'
-                          : 'bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800'
-                      }`}
-                    >
-                      SSTP
-                    </button>
-                    <button
-                      onClick={() => setSelectedVpnType('pptp')}
-                      className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                        selectedVpnType === 'pptp'
-                          ? 'bg-blue-600 text-white shadow-lg'
-                          : 'bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800'
-                      }`}
-                    >
-                      PPTP
+                      {copiedField === 'username' ? (
+                        <CheckCircle2 className="w-3 h-3 text-green-600" />
+                      ) : (
+                        <Copy className="w-3 h-3" />
+                      )}
                     </button>
                   </div>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
+                    Password
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <p className="font-mono text-sm text-gray-900 dark:text-white">
+                      {credentials.password}
+                    </p>
+                    <button
+                      onClick={() => copyToClipboard(credentials.password, 'password')}
+                      className="p-1 hover:bg-gray-200 dark:hover:bg-gray-800 rounded"
+                    >
+                      {copiedField === 'password' ? (
+                        <CheckCircle2 className="w-3 h-3 text-green-600" />
+                      ) : (
+                        <Copy className="w-3 h-3" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+                {selectedVpnType === 'l2tp' && (
+                  <div className="col-span-2">
+                    <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
+                      IPSec Secret
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <p className="font-mono text-sm text-gray-900 dark:text-white">
+                        {credentials.ipsecSecret}
+                      </p>
+                      <button
+                        onClick={() => copyToClipboard(credentials.ipsecSecret, 'secret')}
+                        className="p-1 hover:bg-gray-200 dark:hover:bg-gray-800 rounded"
+                      >
+                        {copiedField === 'secret' ? (
+                          <CheckCircle2 className="w-3 h-3 text-green-600" />
+                        ) : (
+                          <Copy className="w-3 h-3" />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-xl border border-blue-200 dark:border-blue-800">
+                <label className="block text-sm font-medium text-gray-900 dark:text-white mb-3">
+                  Select VPN Type for MikroTik Script
+                </label>
+                <div className="flex gap-2">
+                  {(['l2tp', 'sstp', 'pptp'] as const).map((type) => (
+                    <button
+                      key={type}
+                      onClick={() => setSelectedVpnType(type)}
+                      className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                        selectedVpnType === type
+                          ? 'bg-blue-600 text-white shadow-lg'
+                          : 'bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800'
+                      }`}
+                    >
+                      {type.toUpperCase()}
+                    </button>
+                  ))}
                 </div>
               </div>
 
@@ -704,7 +666,6 @@ export default function VpnClientsPage() {
         </div>
       )}
 
-      {/* Delete Confirmation */}
       {deleteClientId && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white dark:bg-gray-950 rounded-2xl max-w-md w-full p-6 shadow-2xl">

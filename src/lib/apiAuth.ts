@@ -1,15 +1,24 @@
-import { getServerSession } from 'next-auth';
+// src/lib/apiAuth.ts
+import { getServerSession, Session } from 'next-auth';
+import { NextResponse } from 'next/server';
 import { authOptions } from './auth';
 import { hasPermission, isSuperAdmin } from './permissions';
-import { NextResponse } from 'next/server';
 
-/**
- * Check if user is authenticated
- */
-export async function checkAuth() {
+export type AuthOk = {
+  authorized: true;
+  session: Session;
+  userId: string;
+};
+
+export type AuthFail = {
+  authorized: false;
+  response: NextResponse;
+};
+
+export async function checkAuth(): Promise<AuthOk | AuthFail> {
   const session = await getServerSession(authOptions);
-  
-  if (!session || !session.user) {
+
+  if (!session || !session.user || !session.user.id) {
     return {
       authorized: false,
       response: NextResponse.json(
@@ -22,24 +31,18 @@ export async function checkAuth() {
   return {
     authorized: true,
     session,
-    userId: (session.user as any).id,
+    userId: session.user.id,
   };
 }
 
-/**
- * Check if user has required permission
- * Super Admin bypasses all permission checks
- */
-export async function checkPermission(userId: string, permissionKey: string) {
-  // Check if Super Admin (has all permissions)
+export async function checkPermission(
+  userId: string,
+  permissionKey: string
+): Promise<{ authorized: true } | AuthFail> {
   const isSuper = await isSuperAdmin(userId);
-  if (isSuper) {
-    return { authorized: true };
-  }
+  if (isSuper) return { authorized: true };
 
-  // Check specific permission
   const hasAccess = await hasPermission(userId, permissionKey);
-  
   if (!hasAccess) {
     return {
       authorized: false,
@@ -53,29 +56,14 @@ export async function checkPermission(userId: string, permissionKey: string) {
   return { authorized: true };
 }
 
-/**
- * Combined check: Auth + Permission
- * Usage in API routes:
- * 
- * const authCheck = await requirePermission('users.create');
- * if (!authCheck.authorized) return authCheck.response;
- */
-export async function requirePermission(permissionKey: string) {
-  // First check authentication
-  const authCheck = await checkAuth();
-  if (!authCheck.authorized) {
-    return authCheck;
-  }
+export async function requirePermission(
+  permissionKey: string
+): Promise<AuthOk | AuthFail> {
+  const auth = await checkAuth();
+  if (!auth.authorized) return auth;
 
-  // Then check permission
-  const permCheck = await checkPermission(authCheck.userId, permissionKey);
-  if (!permCheck.authorized) {
-    return permCheck;
-  }
+  const perm = await checkPermission(auth.userId, permissionKey);
+  if (!perm.authorized) return perm;
 
-  return {
-    authorized: true,
-    session: authCheck.session,
-    userId: authCheck.userId,
-  };
+  return auth;
 }
