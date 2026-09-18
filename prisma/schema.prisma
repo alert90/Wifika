@@ -721,6 +721,20 @@ model networkODP {
   @@map("network_odps")
 }
 
+model WebhookLog {
+  id            String   @id @default(cuid())
+  gateway       String
+  orderId       String
+  status        String
+  transactionId String?
+  amount        Int?
+  success       Boolean
+  errorMessage  String?
+  payload       String?  // keep as String
+  response      String?  // keep as String
+  createdAt     DateTime @default(now())
+}
+
 model odpCustomerAssignment {
   id         String     @id
   customerId String     @unique

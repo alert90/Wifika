@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import crypto from 'crypto';
+import { createAnyPayWalletPull } from '@/lib/payment/anypay';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,7 +10,7 @@ export async function POST(request: NextRequest) {
   try {
     console.log('[Customer Pay] === REQUEST START ===');
 
-    // Authenticate
+    // 1) Authenticate
     const token = request.headers.get('authorization')?.replace('Bearer ', '');
     if (!token) {
       return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
@@ -22,7 +23,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'Invalid or expired session' }, { status: 401 });
     }
 
-    // Parse body
+    // 2) Parse + validate body
     const { profileId, phone, amount } = await request.json();
     if (!profileId || !phone || !amount) {
       return NextResponse.json(
@@ -31,7 +32,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate profile
     const profile = await prisma.hotspotProfile.findUnique({ where: { id: profileId } });
     if (!profile || !profile.isActive) {
       return NextResponse.json(
@@ -40,7 +40,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get customer info
+    // 3) Customer name resolution
     let customerName = 'Customer';
     let customerPhone = phone;
     if (!session.userId.startsWith('voucher_')) {
@@ -60,7 +60,7 @@ export async function POST(request: NextRequest) {
       if (voucher?.lastUsedBy) customerName = voucher.lastUsedBy;
     }
 
-    // Generate order number
+    // 4) Generate order number
     const now = new Date();
     const dateStr =
       now.getFullYear() +
@@ -71,7 +71,7 @@ export async function POST(request: NextRequest) {
     });
     const orderNumber = `EVC-${dateStr}-${String(count + 1).padStart(4, '0')}`;
 
-    // Create order
+    // 5) Create local order (PENDING)
     const order = await prisma.voucherOrder.create({
       data: {
         id: crypto.randomUUID(),
@@ -84,68 +84,66 @@ export async function POST(request: NextRequest) {
         status: 'PENDING',
       },
     });
-
     console.log('[Customer Pay] Order created:', orderNumber);
 
-    const baseUrl = process.env.INTERNAL_API_URL;
-    const paymentUrl = `${baseUrl}/api/payment/create`;
-    console.log('[Customer Pay] Calling internal payment/create at:', paymentUrl);
+    // 6) Load AnyPay config
+    const gateway = await prisma.paymentGateway.findFirst({
+      where: { provider: 'anypay', isActive: true },
+      select: { anypayApiKey: true },
+    });
+    if (!gateway?.anypayApiKey) {
+      return NextResponse.json(
+        { success: false, error: 'AnyPay is not configured or inactive' },
+        { status: 500 }
+      );
+    }
 
-    const paymentRes = await fetch(paymentUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        orderNumber: order.orderNumber,
-        amount,
-        gateway: 'anypay',
-        type: 'voucher',
-      }),
+    // 7) Build absolute webhook URL (must be publicly reachable)
+    const appUrl =
+      process.env.NEXT_PUBLIC_APP_URL ||
+      process.env.APP_URL ||
+      process.env.INTERNAL_API_URL;
+    if (!appUrl) {
+      return NextResponse.json(
+        { success: false, error: 'App URL is not configured (NEXT_PUBLIC_APP_URL missing)' },
+        { status: 500 }
+      );
+    }
+    const webhookUrl = `${appUrl.replace(/\/$/, '')}/api/payment/anypay/webhook`;
+
+    // 8) Kick off wallet pull (STK push)
+    const pull = await createAnyPayWalletPull(gateway.anypayApiKey, {
+      orderId: order.orderNumber,
+      phone,
+      amount,
+      webhookUrl,
+      webhookVersion: 2,
     });
 
-    // Read response
-    const responseText = await paymentRes.text();
-    console.log('[Customer Pay] Response status:', paymentRes.status);
-    console.log('[Customer Pay] Response body (first 500 chars):', responseText.substring(0, 500));
-
-    if (!paymentRes.ok) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Payment creation failed (${paymentRes.status}): ${responseText.substring(0, 200)}`,
-        },
-        { status: 500 }
-      );
-    }
-
-    let paymentData;
-    try {
-      paymentData = JSON.parse(responseText);
-    } catch (e) {
-      console.error('[Customer Pay] Invalid JSON:', e);
-      return NextResponse.json(
-        { success: false, error: 'Invalid response from payment service' },
-        { status: 500 }
-      );
-    }
-
-    // Update order
+    // 9) Store AnyPay reference on the order
     await prisma.voucherOrder.update({
       where: { id: order.id },
       data: {
-        paymentLink: paymentData.paymentUrl,
-        paymentToken: paymentData.gatewayOrderId,
+        paymentToken: pull.transId || pull.paymentReference || order.orderNumber,
       },
     });
 
+    // 10) Return — frontend should now poll status, NOT redirect
     return NextResponse.json({
       success: true,
       orderId: order.orderNumber,
-      paymentUrl: paymentData.paymentUrl,
+      transactionId: pull.transId,
+      paymentReference: pull.paymentReference,
+      message:
+        pull.message ||
+        'Payment request sent. Please check your phone and enter your mobile money PIN to confirm.',
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message =
+       error instanceof Error ? error.message : 'Internal server error';
     console.error('[Customer Pay] FATAL ERROR:', error);
     return NextResponse.json(
-      { success: false, error: error.message || 'Internal server error' },
+      { success: false, error: message },
       { status: 500 }
     );
   }
