@@ -1,10 +1,13 @@
+// src/app/api/customer/auth/voucher-login/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { nanoid } from 'nanoid';
 
+export const dynamic = 'force-dynamic';
+
 export async function POST(request: NextRequest) {
   try {
-    const { voucherCode, customerName, customerPhone } = await request.json();
+    const { voucherCode } = await request.json();
 
     if (!voucherCode) {
       return NextResponse.json(
@@ -13,17 +16,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Find voucher by code
     const voucher = await prisma.hotspotVoucher.findUnique({
-      where: { code: voucherCode.toUpperCase() },
+      where: { code: String(voucherCode).toUpperCase() },
       include: {
         profile: {
           select: {
             name: true,
+            speed: true,
             sellingPrice: true,
             validityValue: true,
             validityUnit: true,
-            speed: true,
+            sharedUsers: true,
           },
         },
       },
@@ -36,150 +39,98 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Check if voucher is expired
     const now = new Date();
+
     if (voucher.expiresAt && now > voucher.expiresAt) {
       await prisma.hotspotVoucher.update({
         where: { id: voucher.id },
         data: { status: 'EXPIRED' },
       });
-      
       return NextResponse.json(
         { success: false, error: 'Voucher has expired' },
         { status: 400 }
       );
     }
 
-    // Check if already used (only if status is ACTIVE and has a real user)
-    if (voucher.status === 'ACTIVE' && voucher.lastUsedBy) {
-      const existingSession = await prisma.customerSession.findFirst({
-        where: {
-          userId: `voucher_${voucher.id}`,
-          verified: true,
-          expiresAt: { gte: new Date() }
-        }
-      });
+    const userId = `voucher_${voucher.id}`;
 
+    // ✅ ONE SESSION AT A TIME — clear prior sessions for this voucher
+    await prisma.customerSession.deleteMany({
+      where: { userId },
+    });
 
-      if (!existingSession && voucher.lastUsedBy !== 'Anonymous' && voucher.lastUsedBy !== 'Voucher User') {
-        return NextResponse.json(
-          { success: false, error: 'Voucher has already been used' },
-          { status: 400 }
-        );
-      }
-      
-    }
-
-    // Create customer session
     const token = nanoid(64);
     const sessionExpiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 
     await prisma.customerSession.create({
       data: {
-        userId: `voucher_${voucher.id}`,
-        phone: customerPhone || '0000000000',
+        userId,
+        phone: voucher.lastUsedBy || '0000000000',
         token,
         expiresAt: sessionExpiresAt,
         verified: true,
-        otpCode: null,
-        otpExpiry: null,
       },
     });
 
-    // Calculate expiry time for the voucher based on profile validity
+    // Set first login / expiry
     let expiresAt = voucher.expiresAt;
-    if (!expiresAt) {
-      // Calculate expiry based on profile validity
-      const now = new Date();
-      let validityMs = 0;
-      
-      if (voucher.profile) {
-        switch (voucher.profile.validityUnit) {
-          case 'MINUTES':
-            validityMs = voucher.profile.validityValue * 60 * 1000;
-            break;
-          case 'HOURS':
-            validityMs = voucher.profile.validityValue * 60 * 60 * 1000;
-            break;
-          case 'DAYS':
-            validityMs = voucher.profile.validityValue * 24 * 60 * 60 * 1000;
-            break;
-          default:
-            validityMs = 24 * 60 * 60 * 1000; // Default 24 hours
-        }
-      } else {
-        validityMs = 24 * 60 * 60 * 1000; // Default 24 hours
-      }
-      
+    if (!expiresAt && voucher.profile) {
+      const validityMs =
+        voucher.profile.validityUnit === 'MINUTES'
+          ? voucher.profile.validityValue * 60 * 1000
+          : voucher.profile.validityUnit === 'HOURS'
+          ? voucher.profile.validityValue * 60 * 60 * 1000
+          : voucher.profile.validityUnit === 'DAYS'
+          ? voucher.profile.validityValue * 24 * 60 * 60 * 1000
+          : voucher.profile.validityValue * 30 * 24 * 60 * 60 * 1000;
       expiresAt = new Date(now.getTime() + validityMs);
     }
 
-    // Update voucher status to ACTIVE if it's WAITING, and set expiresAt
-    const updatedVoucher = await prisma.hotspotVoucher.update({
+    const updated = await prisma.hotspotVoucher.update({
       where: { id: voucher.id },
       data: {
         status: voucher.status === 'WAITING' ? 'ACTIVE' : voucher.status,
         firstLoginAt: voucher.firstLoginAt || now,
-        expiresAt: expiresAt, // ✅ IMPORTANT: Set the expiry date!
-        lastUsedBy: customerName || 'Voucher User',
+        expiresAt: expiresAt || undefined,
       },
     });
 
-    // Calculate time remaining text
-    let timeRemainingText = '';
-    const remainingMs = expiresAt.getTime() - now.getTime();
-    if (remainingMs > 0) {
-      const hours = Math.floor(remainingMs / (1000 * 60 * 60));
-      const days = Math.floor(hours / 24);
-      if (days > 0) {
-        timeRemainingText = `${days} days ${hours % 24} hours`;
-      } else if (hours > 0) {
-        timeRemainingText = `${hours} hours`;
-      } else {
-        const minutes = Math.floor(remainingMs / (1000 * 60));
-        timeRemainingText = `${minutes} minutes`;
-      }
-    } else {
-      timeRemainingText = 'Expired';
-    }
+    const remainingMs = expiresAt ? expiresAt.getTime() - now.getTime() : 0;
 
-    // Prepare user data for response
-    const user = {
-      id: `voucher_${voucher.id}`,
-      username: voucher.code,
-      name: customerName || 'Voucher User',
-      phone: customerPhone || 'N/A',
-      email: null,
-      status: 'active',
-      expiredAt: expiresAt, // ✅ Now this has a real date
-      profile: voucher.profile,
-      voucherInfo: {
-        code: voucher.code,
-        profileName: voucher.profile?.name || 'Unknown',
-        validityValue: voucher.profile?.validityValue || 0,
-        validityUnit: voucher.profile?.validityUnit || 'DAYS',
-        speed: voucher.profile?.speed || 'N/A',
-        timeRemainingText: timeRemainingText,
-        status: updatedVoucher.status,
-        price: voucher.profile?.sellingPrice || 0,
-        timeRemainingMs: remainingMs,
-        isExpired: remainingMs <= 0,
-        validityDisplay: voucher.profile 
-          ? `${voucher.profile.validityValue} ${voucher.profile.validityUnit.toLowerCase()}`
-          : 'N/A',
-      },
-    };
     return NextResponse.json({
       success: true,
-      requireOTP: false,
-      user,
       token,
+      user: {
+        id: userId,
+        username: voucher.code,
+        name: voucher.lastUsedBy || 'Voucher User',
+        phone: 'N/A',
+        email: null,
+        status: updated.status === 'EXPIRED' ? 'expired' : 'active',
+        expiredAt: expiresAt,
+        profile: voucher.profile
+          ? {
+              name: voucher.profile.name,
+              speed: voucher.profile.speed,
+              downloadSpeed: parseInt(voucher.profile.speed.split('/')[0] || '0'),
+              uploadSpeed: parseInt(voucher.profile.speed.split('/')[1] || '0'),
+            }
+          : null,
+        voucherInfo: {
+          code: voucher.code,
+          profileName: voucher.profile?.name,
+          speed: voucher.profile?.speed,
+          status: updated.status,
+          price: voucher.profile?.sellingPrice,
+          timeRemainingMs: remainingMs > 0 ? remainingMs : 0,
+        },
+      },
     });
-  } catch (error: unknown) {
+  } catch (error) {
     console.error('Voucher login error:', error);
-    const errorMessage = error instanceof Error ? error.message : 'Internal server error';
+    const msg = error instanceof Error ? error.message : 'Internal error';
     return NextResponse.json(
-      { success: false, error: errorMessage },
+      { success: false, error: msg },
       { status: 500 }
     );
   }

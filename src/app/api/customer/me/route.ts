@@ -1,5 +1,8 @@
+// src/app/api/customer/me/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+
+export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
   try {
@@ -12,7 +15,6 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Find session by token
     const session = await prisma.customerSession.findFirst({
       where: {
         token,
@@ -28,10 +30,8 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Check if this is a voucher user (userId starts with 'voucher_')
-// Check if this is a voucher user (userId starts with 'voucher_')
+    // ---------------- Voucher user ----------------
     if (session.userId.startsWith('voucher_')) {
-      // Voucher user - get voucher info with full profile details
       const voucherId = session.userId.replace('voucher_', '');
       const voucher = await prisma.hotspotVoucher.findUnique({
         where: { id: voucherId },
@@ -57,12 +57,12 @@ export async function GET(request: NextRequest) {
         );
       }
 
-      // If voucher has no expiresAt but is ACTIVE, calculate it
+      // Calculate expiresAt on the fly if missing but voucher is active
       let expiresAt = voucher.expiresAt;
       if (!expiresAt && voucher.status === 'ACTIVE' && voucher.firstLoginAt) {
         const firstLogin = new Date(voucher.firstLoginAt);
         let validityMs = 0;
-        
+
         if (voucher.profile) {
           switch (voucher.profile.validityUnit) {
             case 'MINUTES':
@@ -78,33 +78,32 @@ export async function GET(request: NextRequest) {
               validityMs = 24 * 60 * 60 * 1000;
           }
         }
-        
+
         expiresAt = new Date(firstLogin.getTime() + validityMs);
-        
-        // Update the voucher with calculated expiry
+
         await prisma.hotspotVoucher.update({
           where: { id: voucher.id },
-          data: { expiresAt: expiresAt },
+          data: { expiresAt },
         });
       }
 
-      // Calculate time remaining
+      // Time remaining
       let timeRemainingMs = 0;
       let timeRemainingText = '';
       let isExpired = false;
-      
+
       const now = new Date();
       if (expiresAt) {
         timeRemainingMs = expiresAt.getTime() - now.getTime();
         isExpired = timeRemainingMs <= 0;
-        
+
         if (timeRemainingMs > 0) {
           const totalSeconds = Math.floor(timeRemainingMs / 1000);
           const days = Math.floor(totalSeconds / 86400);
           const hours = Math.floor((totalSeconds % 86400) / 3600);
           const minutes = Math.floor((totalSeconds % 3600) / 60);
           const seconds = totalSeconds % 60;
-          
+
           if (days > 0) {
             timeRemainingText = `${days}d ${hours}h ${minutes}m`;
           } else if (hours > 0) {
@@ -118,13 +117,11 @@ export async function GET(request: NextRequest) {
           timeRemainingText = 'Expired';
         }
       } else if (voucher.profile) {
-        // Voucher not yet used - show validity period
         timeRemainingText = `${voucher.profile.validityValue} ${voucher.profile.validityUnit.toLowerCase()}`;
-        timeRemainingMs = 0; // Will be calculated on first login
+        timeRemainingMs = 0;
       }
 
-      // Format validity display
-      const validityDisplay = voucher.profile 
+      const validityDisplay = voucher.profile
         ? `${voucher.profile.validityValue} ${voucher.profile.validityUnit.toLowerCase()}`
         : 'N/A';
 
@@ -135,7 +132,7 @@ export async function GET(request: NextRequest) {
         phone: session.phone || 'N/A',
         email: null,
         status: voucher.status === 'EXPIRED' ? 'expired' : 'active',
-        expiredAt: expiresAt, // ✅ Now this will have a value
+        expiredAt: expiresAt,
         profile: {
           name: voucher.profile?.name || 'Voucher Package',
           downloadSpeed: parseInt(voucher.profile?.speed?.split('/')[0] || '100'),
@@ -151,10 +148,10 @@ export async function GET(request: NextRequest) {
           profileName: voucher.profile?.name,
           speed: voucher.profile?.speed,
           status: voucher.status,
-          validityDisplay: validityDisplay,
-          timeRemainingMs: timeRemainingMs,
-          timeRemainingText: timeRemainingText,
-          isExpired: isExpired,
+          validityDisplay,
+          timeRemainingMs,
+          timeRemainingText,
+          isExpired,
           price: voucher.profile?.sellingPrice,
         },
       };
@@ -162,7 +159,43 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: true, user });
     }
 
-    // Regular PPPoE user
+    // ---------------- Hotspot user (phone-based) ----------------
+    if (session.userId.startsWith('hotspot_')) {
+      const hotspotId = session.userId.replace('hotspot_', '');
+      const user = await prisma.hotspotUser.findUnique({
+        where: { id: hotspotId },
+        include: { profile: true },
+      });
+
+      if (!user) {
+        return NextResponse.json(
+          { success: false, error: 'User not found' },
+          { status: 404 }
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        user: {
+          id: session.userId,
+          name: user.name,
+          phone: user.phone,
+          username: user.phone,
+          status: user.status,
+          expiredAt: user.expiredAt,
+          profile: user.profile
+            ? {
+                name: user.profile.name,
+                speed: user.profile.speed,
+                downloadSpeed: parseInt(user.profile.speed.split('/')[0] || '0'),
+                uploadSpeed: parseInt(user.profile.speed.split('/')[1] || '0'),
+              }
+            : null,
+        },
+      });
+    }
+
+    // ---------------- Regular PPPoE user ----------------
     const user = await prisma.pppoeUser.findUnique({
       where: { id: session.userId },
       select: {
@@ -190,14 +223,13 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    return NextResponse.json({
-      success: true,
-      user,
-    });
-  } catch (error: any) {
+    return NextResponse.json({ success: true, user });
+  } catch (error: unknown) {
+    const message =
+      error instanceof Error ? error.message : 'Unknown error';
     console.error('Get customer data error:', error);
     return NextResponse.json(
-      { success: false, error: error.message },
+      { success: false, error: message },
       { status: 500 }
     );
   }

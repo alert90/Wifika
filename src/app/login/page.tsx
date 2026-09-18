@@ -1,31 +1,57 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
 import Image from 'next/image';
-import { Shield, Smartphone, ArrowRight, Loader2, Ticket } from 'lucide-react';
+import { Smartphone, ArrowRight, Loader2, Ticket } from 'lucide-react';
+
+interface CustomerProfile {
+  name: string;
+  speed?: string;
+  downloadSpeed?: number;
+  uploadSpeed?: number;
+  validityValue?: number;
+  validityUnit?: string;
+}
+
+interface CustomerUser {
+  id: string;
+  name: string;
+  phone: string;
+  username: string;
+  status: string;
+  expiredAt: string | null;
+  profile: CustomerProfile | null;
+  voucherInfo?: {
+    timeRemainingMs?: number;
+  };
+}
+
+interface LoginResponse {
+  success: boolean;
+  token?: string;
+  user?: CustomerUser;
+  error?: string;
+}
 
 export default function CustomerLoginPage() {
   const router = useRouter();
   const [loginType, setLoginType] = useState<'phone' | 'voucher'>('phone');
   const [phone, setPhone] = useState('');
   const [voucherCode, setVoucherCode] = useState('');
-  const [customerName, setCustomerName] = useState('');
-  const [customerPhone, setCustomerPhone] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [companyName, setCompanyName] = useState('Skylink');
 
   useEffect(() => {
     fetch('/api/public/company')
-      .then(res => res.json())
-      .then(data => {
-        if (data.success && data.company.name) {
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success && data.company?.name) {
           setCompanyName(data.company.name);
         }
       })
-      .catch(err => console.error('Load company name error:', err));
+      .catch((err) => console.error('Load company name error:', err));
   }, []);
 
   const getCaptivePortalParams = () => {
@@ -33,23 +59,16 @@ export default function CustomerLoginPage() {
 
     const loginUrl = params.get('loginurl');
     if (loginUrl) {
-      console.log('[Captive Portal] Found loginurl parameter, parsing...');
       const decodedUrl = decodeURIComponent(loginUrl);
-      console.log('[Captive Portal] Decoded URL:', decodedUrl);
-
       const urlParts = decodedUrl.split('?');
       if (urlParts.length > 1) {
         const nestedParams = new URLSearchParams(urlParts[1]);
         return {
           ip: nestedParams.get('ip') || '',
           mac: nestedParams.get('mac') || '',
-          userurl: nestedParams.get('userurl') ? decodeURIComponent(nestedParams.get('userurl')!) : 'http://google.com',
-          uamip: nestedParams.get('uamip') || '',
-          uamport: nestedParams.get('uamport') || '',
-          challenge: nestedParams.get('challenge') || '',
-          called: nestedParams.get('called') || '',
-          nasid: nestedParams.get('nasid') || '',
-          sessionid: nestedParams.get('sessionid') || '',
+          userurl: nestedParams.get('userurl')
+            ? decodeURIComponent(nestedParams.get('userurl')!)
+            : 'http://google.com',
         };
       }
     }
@@ -61,156 +80,106 @@ export default function CustomerLoginPage() {
     };
   };
 
+  const storePortalParams = () => {
+    const { ip: clientIp, mac: clientMac, userurl } = getCaptivePortalParams();
+    if (clientIp) sessionStorage.setItem('client_ip', clientIp);
+    if (clientMac) sessionStorage.setItem('client_mac', clientMac);
+    if (userurl) sessionStorage.setItem('redirect_url', userurl);
+    return { clientIp, clientMac };
+  };
+
+  const authorizeInBackground = (
+    clientIp: string,
+    clientMac: string,
+    username: string,
+    sessionTimeout: number
+  ) => {
+    fetch('/api/authorize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip: clientIp, mac: clientMac, username, sessionTimeout }),
+    })
+      .then((res) => res.json())
+      .then((data) => console.log('[Login] Authorization result:', data))
+      .catch((err) => console.error('[Login] Authorization error:', err));
+  };
+
+  /* ---------------- Phone / Hotspot login ---------------- */
   const handlePhoneLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError('');
-  
-    // Store captive portal params first
-    const portalParams = getCaptivePortalParams();
-    const { ip: clientIp, mac: clientMac, userurl } = portalParams;
-    
-    console.log('[Login] Captive portal params:', { clientIp, clientMac, userurl });
-  
-    if (clientIp) sessionStorage.setItem('client_ip', clientIp);
-    if (clientMac) sessionStorage.setItem('client_mac', clientMac);
-    if (userurl) sessionStorage.setItem('redirect_url', userurl);
-  
+
+    const { clientIp, clientMac } = storePortalParams();
+
     try {
-      console.log('[Login] Starting phone login with:', phone);
-      
-      const res = await fetch('/api/customer/auth/login', {
+      const res = await fetch('/api/customer/auth/hotspot-login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone }),
       });
-  
-      const data = await res.json();
-      console.log('[Login] Phone login response:', data);
-  
-      if (data.success) {
-        // Store token and user data FIRST
+
+      const data: LoginResponse = await res.json();
+
+      if (data.success && data.token && data.user) {
         localStorage.setItem('customer_token', data.token);
         localStorage.setItem('customer_user', JSON.stringify(data.user));
-      
-        // ALWAYS go to dashboard first
-        console.log('[Login] Redirecting to /customer');
         router.push('/customer');
-  
-        // Try authorization in the background (don't block)
+
         if (clientIp && clientMac) {
           let timeout = 86400;
           const value = data.user.profile?.validityValue || 1;
           const unit = data.user.profile?.validityUnit || 'DAYS';
-  
           if (unit === 'MINUTES') timeout = value * 60;
           if (unit === 'HOURS') timeout = value * 3600;
           if (unit === 'DAYS') timeout = value * 86400;
-  
-          // Do this asynchronously - don't await
-          fetch('/api/authorize', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              ip: clientIp,
-              mac: clientMac,
-              username: data.user.username,
-              sessionTimeout: timeout
-            })
-          }).then(authRes => authRes.json())
-            .then(authData => {
-              console.log('[Login] Background authorization result:', authData);
-            })
-            .catch(err => {
-              console.error('[Login] Background authorization error:', err);
-            });
-        } 
+
+          authorizeInBackground(clientIp, clientMac, data.user.username, timeout);
+        }
       } else {
-        setError(data.error || 'Phone number not registered');
+        setError(data.error || 'Login failed');
       }
-    } catch (error) {
-      console.error('[Login] Unexpected error:', error);
+    } catch (err) {
+      console.error('[Login] Phone login error:', err);
       setError('An error occurred. Please try again.');
     } finally {
       setLoading(false);
     }
   };
 
+  /* ---------------- Voucher login ---------------- */
   const handleVoucherLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError('');
-    
-    // Store captive portal params first
-    const portalParams = getCaptivePortalParams();
-    const { ip: clientIp, mac: clientMac, userurl } = portalParams;
 
-    console.log('[Login] Captive portal params:', { clientIp, clientMac, userurl });
-  
-    if (clientIp) sessionStorage.setItem('client_ip', clientIp);
-    if (clientMac) sessionStorage.setItem('client_mac', clientMac);
-    if (userurl) sessionStorage.setItem('redirect_url', userurl);
-  
+    const { clientIp, clientMac } = storePortalParams();
+
     try {
-      console.log('[Login] Starting voucher login with code:', voucherCode);
-      
       const res = await fetch('/api/customer/auth/voucher-login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          voucherCode: voucherCode,
-          customerName: customerName || 'Guest User',
-          customerPhone: customerPhone || ''
-        }),
+        body: JSON.stringify({ voucherCode }),
       });
-  
+
       const data = await res.json();
-      console.log('[Login] Voucher login response:', data);
-  
-      if (data.success) {
-        // Store token and user data FIRST
+
+      if (data.success && data.token && data.user) {
         localStorage.setItem('customer_token', data.token);
         localStorage.setItem('customer_user', JSON.stringify(data.user));
-  
-        // ALWAYS go to dashboard first
-        console.log('[Login] Redirecting to /customer');
         router.push('/customer');
-        
-        // Try authorization in the background (don't block)
+
         if (clientIp && clientMac) {
-          // Calculate timeout from user data
           let timeout = 3600;
-          const validityMs = (data.user as any)?.voucherInfo?.timeRemainingMs;
-          if (validityMs) {
-            timeout = Math.floor(validityMs / 1000);
-          }
-  
-          // Do this asynchronously - don't await
-          fetch('/api/authorize', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              ip: clientIp,
-              mac: clientMac,
-              username: voucherCode,
-              sessionTimeout: timeout
-            })
-          }).then(authRes => authRes.json())
-            .then(authData => {
-              console.log('[Login] Background authorization result:', authData);
-            })
-            .catch(err => {
-              console.error('[Login] Background authorization error:', err);
-            });
-        } else {
-          console.log('[Login] No IP/MAC in URL, skipping authorization');
+          const validityMs = data.user?.voucherInfo?.timeRemainingMs;
+          if (validityMs) timeout = Math.floor(validityMs / 1000);
+          authorizeInBackground(clientIp, clientMac, voucherCode, timeout);
         }
       } else {
-        console.error('[Login] Voucher login failed:', data.error);
         setError(data.error || 'Invalid voucher code');
       }
-    } catch (error) {
-      console.error('[Login] Unexpected error:', error);
+    } catch (err) {
+      console.error('[Login] Voucher login error:', err);
       setError('An error occurred. Please try again.');
     } finally {
       setLoading(false);
@@ -220,19 +189,12 @@ export default function CustomerLoginPage() {
   const handleLoginTypeChange = (type: 'phone' | 'voucher') => {
     setLoginType(type);
     setError('');
-    setPhone('');
-    setVoucherCode('');
-    setCustomerName('');
-    setCustomerPhone('');
   };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-blue-50 dark:from-gray-950 dark:via-gray-900 dark:to-gray-950 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          {/* <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-blue-600 to-blue-700 rounded-2xl shadow-lg shadow-blue-500/30 mb-4">
-            <Shield className="w-8 h-8 text-white" />
-          </div> */}
           <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">
             {companyName}
           </h1>
@@ -240,8 +202,15 @@ export default function CustomerLoginPage() {
             Affordable WiFi Connection
           </p>
           <div className="flex justify-center my-4">
-        <Image src="/wifika.png" alt="WiFi" width={445} height={200} className="rounded-lg shadow-md" priority />
-        </div>
+            <Image
+              src="/wifika.png"
+              alt="WiFi"
+              width={445}
+              height={200}
+              className="rounded-lg shadow-md"
+              priority
+            />
+          </div>
         </div>
 
         <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl border border-gray-200 dark:border-gray-700 p-6 sm:p-8">
@@ -287,7 +256,7 @@ export default function CustomerLoginPage() {
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                   <Smartphone className="w-4 h-4 inline mr-2" />
-                  Registered Phone Number
+                  Phone Number
                 </label>
                 <input
                   type="tel"
@@ -298,6 +267,9 @@ export default function CustomerLoginPage() {
                   placeholder="0743XXXXXX"
                   disabled={loading}
                 />
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                  Enter your mobile number to continue
+                </p>
               </div>
 
               <button
@@ -312,7 +284,7 @@ export default function CustomerLoginPage() {
                   </>
                 ) : (
                   <>
-                    Login
+                    Continue
                     <ArrowRight className="w-5 h-5" />
                   </>
                 )}
@@ -337,7 +309,7 @@ export default function CustomerLoginPage() {
                   placeholder="ABC123"
                   disabled={loading}
                 />
-                <p className="text-xs text-gray-500 mt-2">
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
                   Enter your voucher code (case-insensitive)
                 </p>
               </div>
@@ -361,20 +333,6 @@ export default function CustomerLoginPage() {
               </button>
             </form>
           )}
-
-          {/* Registration Link */}
-          <div className="mt-6 text-center">
-            <p className="text-sm text-gray-600 dark:text-gray-400">
-              Don't have an account?
-              <br />
-              <Link 
-                href="/daftar" 
-                className="text-blue-600 hover:text-blue-700 dark:text-blue-400 font-medium transition-colors"
-              >
-                Register here
-              </Link>
-            </p>
-          </div>
         </div>
 
         <p className="text-center text-sm text-gray-500 dark:text-gray-400 mt-6">

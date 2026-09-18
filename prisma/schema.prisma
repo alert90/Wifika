@@ -32,6 +32,7 @@ model agent {
   createdAt DateTime    @default(now())
   updatedAt DateTime    @updatedAt
   sales     agentSale[]
+  payments  agentPayment[]
 
   @@index([phone])
   @@map("agents")
@@ -70,6 +71,7 @@ model hotspotProfile {
   validityValue  Int
   vouchers       hotspotVoucher[]
   orders         voucherOrder[]
+  users          hotspotUser[]
 
   @@map("hotspot_profiles")
 }
@@ -98,6 +100,29 @@ model hotspotVoucher {
   @@index([soldToPhone])
   @@index([soldAt])
   @@map("hotspot_vouchers")
+}
+
+model hotspotUser {
+  id            String    @id @default(cuid())
+  name          String
+  phone         String    @unique
+  email         String?
+  password      String?
+  macAddress    String?
+  status        String    @default("active")   // active | isolated | blocked
+  expiredAt     DateTime?
+  lastLoginAt   DateTime?
+  totalSpent    Int       @default(0)
+  profileId     String?
+  notes         String?   @db.Text
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  profile       hotspotProfile? @relation(fields: [profileId], references: [id])
+
+  @@index([phone])
+  @@index([status])
+  @@map("hotspot_users")
 }
 
 model invoice {
@@ -422,6 +447,25 @@ model users {
   role      users_role @default(ADMIN)
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
+}
+
+model agentPayment {
+  id            String    @id @default(cuid())
+  agentId       String
+  orderNumber   String    @unique
+  amount        Int
+  phone         String
+  status        String    @default("PENDING")   // PENDING | PAID | FAILED
+  transactionId String?
+  paidAt        DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  agent         agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId])
+  @@index([status])
+  @@map("agent_payments")
 }
 
 model voucherOrder {

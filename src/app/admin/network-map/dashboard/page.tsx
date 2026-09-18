@@ -2,7 +2,13 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import {
   Server,
@@ -15,6 +21,10 @@ import {
   EyeOff,
   Layers,
 } from 'lucide-react';
+import type {
+  NetworkData,
+  VisibleLayers,
+} from '@/components/map/NetworkMapComponent';
 
 interface PppoeUserLite {
   id: string;
@@ -65,7 +75,7 @@ export default function NetworkMapDashboard() {
     activeCustomers: 0,
   });
 
-  const [visibleLayers, setVisibleLayers] = useState({
+  const [visibleLayers, setVisibleLayers] = useState<VisibleLayers>({
     servers: true,
     olts: true,
     odcs: true,
@@ -75,14 +85,14 @@ export default function NetworkMapDashboard() {
     customAps: true,
   });
 
-  const [networkData, setNetworkData] = useState({
-    servers: [] as unknown[],
-    olts: [] as unknown[],
-    odcs: [] as unknown[],
-    odps: [] as unknown[],
-    customers: [] as PppoeUserLite[],
-    customerAssignments: [] as unknown[],
-    customAps: [] as unknown[],
+  const [networkData, setNetworkData] = useState<NetworkData>({
+    servers: [],
+    olts: [],
+    odcs: [],
+    odps: [],
+    customers: [],
+    customerAssignments: [],
+    customAps: [],
   });
 
   const [loading, setLoading] = useState(true);
@@ -91,16 +101,23 @@ export default function NetworkMapDashboard() {
   const loadNetworkData = useCallback(async () => {
     setLoading(true);
     try {
-      const [serversRes, oltsRes, odcsRes, odpsRes, customersRes, assignmentsRes, customApsRes] =
-        await Promise.all([
-          fetch('/api/network/servers'),
-          fetch('/api/network/olts'),
-          fetch('/api/network/odcs'),
-          fetch('/api/network/odps'),
-          fetch('/api/pppoe/users'),
-          fetch('/api/network/customers/assign'),
-          fetch('/api/network/custom-aps'),
-        ]);
+      const [
+        serversRes,
+        oltsRes,
+        odcsRes,
+        odpsRes,
+        customersRes,
+        assignmentsRes,
+        customApsRes,
+      ] = await Promise.all([
+        fetch('/api/network/servers'),
+        fetch('/api/network/olts'),
+        fetch('/api/network/odcs'),
+        fetch('/api/network/odps'),
+        fetch('/api/pppoe/users'),
+        fetch('/api/network/customers/assign'),
+        fetch('/api/network/custom-aps'),
+      ]);
 
       const servers = await serversRes.json();
       const olts = await oltsRes.json();
@@ -131,7 +148,8 @@ export default function NetworkMapDashboard() {
         odps: odps.odps?.length || 0,
         customers: customers.users?.length || 0,
         activeCustomers:
-          customers.users?.filter((u: PppoeUserLite) => u.status === 'active').length || 0,
+          customers.users?.filter((u: PppoeUserLite) => u.status === 'active')
+            .length || 0,
       });
     } catch (error) {
       console.error('Failed to load network data:', error);
@@ -141,7 +159,18 @@ export default function NetworkMapDashboard() {
   }, []);
 
   useEffect(() => {
-    void loadNetworkData();
+    let cancelled = false;
+
+    const bootstrap = async () => {
+      if (cancelled) return;
+      await loadNetworkData();
+    };
+
+    void bootstrap();
+
+    return () => {
+      cancelled = true;
+    };
   }, [loadNetworkData]);
 
   const handleRefresh = () => {
@@ -150,7 +179,7 @@ export default function NetworkMapDashboard() {
     setTimeout(() => setRefreshing(false), 1000);
   };
 
-  const toggleLayer = (layer: keyof typeof visibleLayers) => {
+  const toggleLayer = (layer: keyof VisibleLayers) => {
     setVisibleLayers((prev) => ({ ...prev, [layer]: !prev[layer] }));
   };
 
@@ -162,7 +191,9 @@ export default function NetworkMapDashboard() {
           <p className="text-gray-500 mt-1">Visualize your network topology</p>
         </div>
         <Button onClick={handleRefresh} variant="outline" disabled={refreshing}>
-          <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
+          <RefreshCw
+            className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`}
+          />
           Refresh
         </Button>
       </div>
@@ -233,7 +264,9 @@ export default function NetworkMapDashboard() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-xs text-gray-500">Active</p>
-                <p className="text-2xl font-bold text-green-600">{stats.activeCustomers}</p>
+                <p className="text-2xl font-bold text-green-600">
+                  {stats.activeCustomers}
+                </p>
               </div>
               <Users className="h-8 w-8 text-green-400" />
             </div>
@@ -256,8 +289,16 @@ export default function NetworkMapDashboard() {
                 <Server className="h-4 w-4 text-blue-400" />
                 Servers
               </span>
-              <Button variant="ghost" size="sm" onClick={() => toggleLayer('servers')}>
-                {visibleLayers.servers ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => toggleLayer('servers')}
+              >
+                {visibleLayers.servers ? (
+                  <Eye className="h-4 w-4" />
+                ) : (
+                  <EyeOff className="h-4 w-4" />
+                )}
               </Button>
             </div>
 
@@ -266,8 +307,16 @@ export default function NetworkMapDashboard() {
                 <RouterIcon className="h-4 w-4 text-purple-400" />
                 OLTs
               </span>
-              <Button variant="ghost" size="sm" onClick={() => toggleLayer('olts')}>
-                {visibleLayers.olts ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => toggleLayer('olts')}
+              >
+                {visibleLayers.olts ? (
+                  <Eye className="h-4 w-4" />
+                ) : (
+                  <EyeOff className="h-4 w-4" />
+                )}
               </Button>
             </div>
 
@@ -276,8 +325,16 @@ export default function NetworkMapDashboard() {
                 <Radio className="h-4 w-4 text-yellow-400" />
                 ODCs
               </span>
-              <Button variant="ghost" size="sm" onClick={() => toggleLayer('odcs')}>
-                {visibleLayers.odcs ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => toggleLayer('odcs')}
+              >
+                {visibleLayers.odcs ? (
+                  <Eye className="h-4 w-4" />
+                ) : (
+                  <EyeOff className="h-4 w-4" />
+                )}
               </Button>
             </div>
 
@@ -286,8 +343,16 @@ export default function NetworkMapDashboard() {
                 <Wifi className="h-4 w-4 text-green-400" />
                 ODPs
               </span>
-              <Button variant="ghost" size="sm" onClick={() => toggleLayer('odps')}>
-                {visibleLayers.odps ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => toggleLayer('odps')}
+              >
+                {visibleLayers.odps ? (
+                  <Eye className="h-4 w-4" />
+                ) : (
+                  <EyeOff className="h-4 w-4" />
+                )}
               </Button>
             </div>
 
@@ -296,8 +361,34 @@ export default function NetworkMapDashboard() {
                 <Users className="h-4 w-4 text-orange-400" />
                 Customers
               </span>
-              <Button variant="ghost" size="sm" onClick={() => toggleLayer('customers')}>
-                {visibleLayers.customers ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => toggleLayer('customers')}
+              >
+                {visibleLayers.customers ? (
+                  <Eye className="h-4 w-4" />
+                ) : (
+                  <EyeOff className="h-4 w-4" />
+                )}
+              </Button>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-sm flex items-center gap-2">
+                <Wifi className="h-4 w-4 text-teal-400" />
+                Custom APs
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => toggleLayer('customAps')}
+              >
+                {visibleLayers.customAps ? (
+                  <Eye className="h-4 w-4" />
+                ) : (
+                  <EyeOff className="h-4 w-4" />
+                )}
               </Button>
             </div>
 
@@ -307,8 +398,14 @@ export default function NetworkMapDashboard() {
               <p className="text-sm font-medium mb-2">PON Port Colors</p>
               <div className="space-y-1.5">
                 {PON_COLORS.map((pon) => (
-                  <div key={pon.port} className="flex items-center gap-2 text-xs">
-                    <div className="w-3 h-3 rounded-full" style={{ backgroundColor: pon.color }} />
+                  <div
+                    key={pon.port}
+                    className="flex items-center gap-2 text-xs"
+                  >
+                    <div
+                      className="w-3 h-3 rounded-full"
+                      style={{ backgroundColor: pon.color }}
+                    />
                     <span>{pon.name}</span>
                   </div>
                 ))}

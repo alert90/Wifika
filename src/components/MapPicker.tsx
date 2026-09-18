@@ -47,8 +47,8 @@ export default function MapPicker({
   isOpen,
   onClose,
   onSelect,
-  initialLat = -7.0712854057077745,
-  initialLng = 108.04477186751905,
+  initialLat = -6.7924,
+  initialLng = 39.2083,
 }: MapPickerProps) {
   // ✅ Initialize directly from props — no setState in effect needed
   const [position, setPosition] = useState<[number, number]>([

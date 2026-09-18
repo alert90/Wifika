@@ -4,7 +4,126 @@ import { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
-// ---------- Inject custom marker styles ----------
+/* ------------------------------------------------------------------ */
+/* Types                                                              */
+/* ------------------------------------------------------------------ */
+
+export interface MapServer {
+  id: string;
+  name: string;
+  ipAddress: string;
+  latitude: number;
+  longitude: number;
+  status: string;
+  routerId?: string | null;
+  _count?: { olts?: number };
+}
+
+export interface MapOLT {
+  id: string;
+  name: string;
+  ipAddress: string;
+  latitude: number;
+  longitude: number;
+  followRoad?: boolean;
+  routers?: Array<{ id: string; router: { id: string; name: string } }>;
+  _count?: { odcs?: number; odps?: number };
+}
+
+export interface MapODC {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  oltId: string;
+  ponPort: number;
+  portCount: number;
+  followRoad?: boolean;
+  olt?: { name: string };
+}
+
+export interface MapODP {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  odcId?: string | null;
+  parentOdpId?: string | null;
+  oltId: string;
+  ponPort: number;
+  portCount: number;
+  followRoad?: boolean;
+  status: string;
+  odc?: { name: string };
+  parentOdp?: { name: string };
+  olt?: { name: string };
+}
+
+export interface MapCustomer {
+  id: string;
+  name: string;
+  username: string;
+  phone: string;
+  address?: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  status: string;
+  isOnline?: boolean;
+}
+
+export interface MapAssignment {
+  customerId: string;
+  odpId: string;
+  portNumber: number;
+  distance?: number;
+  odp?: MapODP;
+}
+
+export interface MapAP {
+  id: string;
+  name: string;
+  ipAddress: string;
+  latitude: number;
+  longitude: number;
+  status: string;
+}
+
+export interface NetworkData {
+  servers: MapServer[];
+  olts: MapOLT[];
+  odcs: MapODC[];
+  odps: MapODP[];
+  customers: MapCustomer[];
+  customerAssignments?: MapAssignment[];
+  customAps: MapAP[];
+}
+
+export interface VisibleLayers {
+  servers: boolean;
+  olts: boolean;
+  odcs: boolean;
+  odps: boolean;
+  customers: boolean;
+  cables: boolean;
+  customAps: boolean;
+}
+
+export interface PonColor {
+  port: number;
+  color: string;
+  name: string;
+}
+
+export interface NetworkMapComponentProps {
+  networkData: NetworkData;
+  visibleLayers: VisibleLayers;
+  ponColors: PonColor[];
+}
+
+/* ------------------------------------------------------------------ */
+/* Injected marker styles                                             */
+/* ------------------------------------------------------------------ */
+
 if (typeof window !== 'undefined') {
   const style = document.createElement('style');
   style.innerHTML = `
@@ -31,33 +150,16 @@ if (typeof window !== 'undefined') {
   }
 }
 
-interface NetworkMapComponentProps {
-  networkData: {
-    servers: any[];
-    olts: any[];
-    odcs: any[];
-    odps: any[];
-    customers: any[];
-    customerAssignments?: any[];
-    customAps: any[];
-  };
-  visibleLayers: {
-    servers: boolean;
-    olts: boolean;
-    odcs: boolean;
-    odps: boolean;
-    customers: boolean;
-    cables: boolean;
-    customAps: boolean;
-  };
-  ponColors: Array<{ port: number; color: string; name: string }>;
-}
+/* ------------------------------------------------------------------ */
+/* Basemaps                                                           */
+/* ------------------------------------------------------------------ */
 
 const MAP_LAYERS = {
   osm: {
     name: 'OpenStreetMap',
     url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    attribution:
+      '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
   },
   satellite: {
     name: 'Satellite',
@@ -74,7 +176,13 @@ const MAP_LAYERS = {
     url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
     attribution: '&copy; <a href="https://opentopomap.org/">OpenTopoMap</a>',
   },
-};
+} as const;
+
+type LayerKey = keyof typeof MAP_LAYERS;
+
+/* ------------------------------------------------------------------ */
+/* Component                                                          */
+/* ------------------------------------------------------------------ */
 
 export default function NetworkMapComponent({
   networkData,
@@ -86,17 +194,17 @@ export default function NetworkMapComponent({
   const markersRef = useRef<L.LayerGroup | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const [currentLayer, setCurrentLayer] = useState<keyof typeof MAP_LAYERS>('osm');
+  const [currentLayer, setCurrentLayer] = useState<LayerKey>('osm');
   const [isFullscreen, setIsFullscreen] = useState(false);
 
-  // ----- Main map setup & marker drawing -----
+  /* ---------------- Init map ---------------- */
   useEffect(() => {
     if (!mapContainerRef.current) return;
 
     if (!mapRef.current) {
       mapRef.current = L.map(mapContainerRef.current).setView(
-        [-7.071273611475302, 108.04475042198051],
-        15
+        [-6.7924, 39.2083],
+        12
       );
 
       const layer = MAP_LAYERS[currentLayer];
@@ -108,11 +216,23 @@ export default function NetworkMapComponent({
       markersRef.current = L.layerGroup().addTo(mapRef.current);
     }
 
-    markersRef.current?.clearLayers();
+    return () => {
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    // ----- Servers -----
+  /* ---------------- Draw markers whenever data changes ---------------- */
+  useEffect(() => {
+    if (!mapRef.current || !markersRef.current) return;
+    markersRef.current.clearLayers();
+
+    /* ----- Servers ----- */
     if (visibleLayers.servers) {
-      networkData.servers.forEach((server: any) => {
+      networkData.servers.forEach((server) => {
         const iconHtml = `
           <div style="position: relative; width: 40px; height: 40px;">
             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -121,12 +241,15 @@ export default function NetworkMapComponent({
               <rect x="2" y="19" width="20" height="2" rx="1" fill="#3B82F6" stroke="#1E40AF" stroke-width="1.5"/>
               <circle cx="5" cy="6" r="0.8" fill="#10B981"/>
               <circle cx="5" cy="14" r="0.8" fill="#10B981"/>
-              <line x1="8" y1="6" x2="11" y2="6" stroke="#E5E7EB" stroke-width="1" stroke-linecap="round"/>
-              <line x1="8" y1="14" x2="11" y2="14" stroke="#E5E7EB" stroke-width="1" stroke-linecap="round"/>
             </svg>
           </div>`;
         const marker = L.marker([server.latitude, server.longitude], {
-          icon: L.divIcon({ className: 'custom-server-marker', html: iconHtml, iconSize: [40, 40], iconAnchor: [20, 20] }),
+          icon: L.divIcon({
+            className: 'custom-server-marker',
+            html: iconHtml,
+            iconSize: [40, 40],
+            iconAnchor: [20, 20],
+          }),
         });
         marker.bindPopup(`
           <div class="p-2">
@@ -140,9 +263,9 @@ export default function NetworkMapComponent({
       });
     }
 
-    // ----- OLTs (divIcon) -----
+    /* ----- OLTs ----- */
     if (visibleLayers.olts) {
-      networkData.olts.forEach((olt: any) => {
+      networkData.olts.forEach((olt) => {
         const iconHtml = `
           <div style="position: relative; width: 36px; height: 36px;">
             <svg width="36" height="36" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -151,14 +274,19 @@ export default function NetworkMapComponent({
               <rect x="6" y="12" width="4" height="3" rx="0.5" fill="#E9D5FF"/>
               <rect x="14" y="8" width="4" height="3" rx="0.5" fill="#E9D5FF"/>
               <rect x="14" y="12" width="4" height="3" rx="0.5" fill="#E9D5FF"/>
-              <circle cx="12" cy="16" r="1" fill="#10B981"/>
-              <path d="M8 3 L12 5 L16 3" stroke="#7C3AED" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
           </div>`;
         const marker = L.marker([olt.latitude, olt.longitude], {
-          icon: L.divIcon({ className: 'custom-olt-marker', html: iconHtml, iconSize: [36, 36], iconAnchor: [18, 18] }),
+          icon: L.divIcon({
+            className: 'custom-olt-marker',
+            html: iconHtml,
+            iconSize: [36, 36],
+            iconAnchor: [18, 18],
+          }),
         });
-        const routerNames = olt.routers?.map((r: any) => r.router?.name).filter(Boolean).join(', ') || '-';
+        const routerNames =
+          olt.routers?.map((r) => r.router?.name).filter(Boolean).join(', ') ||
+          '-';
         marker.bindPopup(`
           <div class="p-2">
             <h3 class="font-bold text-purple-600">📡 OLT</h3>
@@ -172,17 +300,21 @@ export default function NetworkMapComponent({
       });
     }
 
-    // ----- ODCs -----
+    /* ----- ODCs ----- */
     if (visibleLayers.odcs) {
-      networkData.odcs.forEach((odc: any) => {
-        const ponColor = ponColors.find((p) => p.port === odc.ponPort)?.color || '#EAB308';
-        const directOdps = networkData.odps.filter((o: any) => o.odcId === odc.id);
+      networkData.odcs.forEach((odc) => {
+        const ponColor =
+          ponColors.find((p) => p.port === odc.ponPort)?.color || '#EAB308';
+        const directOdps = networkData.odps.filter((o) => o.odcId === odc.id);
         const getTotalOdps = (parentOdpIds: string[]): number => {
-          const childOdps = networkData.odps.filter((o: any) => parentOdpIds.includes(o.parentOdpId));
+          const childOdps = networkData.odps.filter((o) =>
+            parentOdpIds.includes(o.parentOdpId || '')
+          );
           if (childOdps.length === 0) return 0;
-          return childOdps.length + getTotalOdps(childOdps.map((o: any) => o.id));
+          return childOdps.length + getTotalOdps(childOdps.map((o) => o.id));
         };
-        const totalOdps = directOdps.length + getTotalOdps(directOdps.map((o: any) => o.id));
+        const totalOdps =
+          directOdps.length + getTotalOdps(directOdps.map((o) => o.id));
         const iconHtml = `
           <div style="position: relative; width: 32px; height: 32px;">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -190,14 +322,15 @@ export default function NetworkMapComponent({
               <rect x="7" y="9" width="2" height="2" rx="0.5" fill="white" opacity="0.9"/>
               <rect x="11" y="9" width="2" height="2" rx="0.5" fill="white" opacity="0.9"/>
               <rect x="15" y="9" width="2" height="2" rx="0.5" fill="white" opacity="0.9"/>
-              <rect x="7" y="13" width="2" height="2" rx="0.5" fill="white" opacity="0.9"/>
-              <rect x="11" y="13" width="2" height="2" rx="0.5" fill="white" opacity="0.9"/>
-              <rect x="15" y="13" width="2" height="2" rx="0.5" fill="white" opacity="0.9"/>
-              <circle cx="12" cy="4" r="1.5" fill="#10B981"/>
             </svg>
           </div>`;
         const marker = L.marker([odc.latitude, odc.longitude], {
-          icon: L.divIcon({ className: 'custom-odc-marker', html: iconHtml, iconSize: [32, 32], iconAnchor: [16, 16] }),
+          icon: L.divIcon({
+            className: 'custom-odc-marker',
+            html: iconHtml,
+            iconSize: [32, 32],
+            iconAnchor: [16, 16],
+          }),
         });
         marker.bindPopup(`
           <div class="p-2">
@@ -212,23 +345,25 @@ export default function NetworkMapComponent({
       });
     }
 
-    // ----- ODPs -----
+    /* ----- ODPs ----- */
     if (visibleLayers.odps) {
-      networkData.odps.forEach((odp: any) => {
-        const ponColor = ponColors.find((p) => p.port === odp.ponPort)?.color || '#10B981';
+      networkData.odps.forEach((odp) => {
+        const ponColor =
+          ponColors.find((p) => p.port === odp.ponPort)?.color || '#10B981';
         const iconHtml = `
           <div style="position: relative; width: 28px; height: 28px;">
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <circle cx="12" cy="12" r="10" fill="${ponColor}" stroke="#065F46" stroke-width="1.5"/>
               <circle cx="12" cy="12" r="6" fill="white" opacity="0.3"/>
-              <circle cx="12" cy="8" r="1.5" fill="white" opacity="0.9"/>
-              <circle cx="8" cy="13" r="1.5" fill="white" opacity="0.9"/>
-              <circle cx="16" cy="13" r="1.5" fill="white" opacity="0.9"/>
-              <circle cx="12" cy="16" r="1.5" fill="white" opacity="0.9"/>
             </svg>
           </div>`;
         const marker = L.marker([odp.latitude, odp.longitude], {
-          icon: L.divIcon({ className: 'custom-odp-marker', html: iconHtml, iconSize: [24, 24], iconAnchor: [12, 12] }),
+          icon: L.divIcon({
+            className: 'custom-odp-marker',
+            html: iconHtml,
+            iconSize: [24, 24],
+            iconAnchor: [12, 12],
+          }),
         });
         marker.bindPopup(`
           <div class="p-2">
@@ -245,11 +380,11 @@ export default function NetworkMapComponent({
       });
     }
 
-    // ----- Customers -----
+    /* ----- Customers ----- */
     if (visibleLayers.customers) {
-      networkData.customers.forEach((customer: any) => {
-        if (customer.latitude && customer.longitude) {
-          const isOnline = customer.isOnline;
+      networkData.customers.forEach((customer) => {
+        if (customer.latitude != null && customer.longitude != null) {
+          const isOnline = !!customer.isOnline;
           const isActive = customer.status === 'active';
           const iconHtml = isOnline
             ? `
@@ -257,8 +392,7 @@ export default function NetworkMapComponent({
                 <div class="absolute w-9 h-9 bg-green-400 rounded-full animate-ping opacity-75"></div>
                 <div class="relative customer-marker-icon">
                   <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M3 9L12 2L21 9V20C21 20.5304 20.7893 21.0391 20.4142 21.4142C20.0391 21.7893 19.5304 22 19 22H5C4.46957 22 3.96086 21.7893 3.58579 21.4142C3.21071 21.0391 3 20.5304 3 20V9Z" fill="#10B981" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                    <path d="M9 22V12H15V22" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M3 9L12 2L21 9V20C21 20.5304 20.7893 21.0391 20.4142 21.4142C20.0391 21.7893 19.5304 22 19 22H5C4.46957 22 3.96086 21.7893 3.58579 21.4142C3.21071 21.0391 3 20.5304 3 20V9Z" fill="#10B981" stroke="white" stroke-width="2"/>
                   </svg>
                 </div>
               </div>`
@@ -267,37 +401,40 @@ export default function NetworkMapComponent({
                 <div class="absolute w-9 h-9 bg-red-400 rounded-full animate-ping opacity-75"></div>
                 <div class="relative customer-marker-icon">
                   <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M3 9L12 2L21 9V20C21 20.5304 20.7893 21.0391 20.4142 21.4142C20.0391 21.7893 19.5304 22 19 22H5C4.46957 22 3.96086 21.7893 3.58579 21.4142C3.21071 21.0391 3 20.5304 3 20V9Z" fill="${
-                      isActive ? '#EF4444' : '#9CA3AF'
-                    }" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                    <path d="M9 22V12H15V22" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M3 9L12 2L21 9V20C21 20.5304 20.7893 21.0391 20.4142 21.4142C20.0391 21.7893 19.5304 22 19 22H5C4.46957 22 3.96086 21.7893 3.58579 21.4142C3.21071 21.0391 3 20.5304 3 20V9Z" fill="${isActive ? '#EF4444' : '#9CA3AF'}" stroke="white" stroke-width="2"/>
                   </svg>
                 </div>
               </div>`;
-          const marker = L.marker([customer.latitude, customer.longitude], {
-            icon: L.divIcon({ className: 'custom-customer-marker', html: iconHtml, iconSize: [32, 32], iconAnchor: [16, 16] }),
-          });
+          const marker = L.marker(
+            [customer.latitude, customer.longitude],
+            {
+              icon: L.divIcon({
+                className: 'custom-customer-marker',
+                html: iconHtml,
+                iconSize: [32, 32],
+                iconAnchor: [16, 16],
+              }),
+            }
+          );
           const assignment = networkData.customerAssignments?.find(
-            (a: any) => a.customerId === customer.id
+            (a) => a.customerId === customer.id
           );
           marker.bindPopup(`
             <div class="p-2">
               <h3 class="font-bold text-blue-600 flex items-center gap-1">
                 👤 Customer
-                ${isOnline 
-                  ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-green-100 text-green-700">Online</span>' 
+                ${isOnline
+                  ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-green-100 text-green-700">Online</span>'
                   : '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-600">Offline</span>'}
               </h3>
               <p class="text-sm mt-1"><strong>${customer.name}</strong></p>
               <p class="text-xs text-gray-600">${customer.username}</p>
               <p class="text-xs text-gray-500">Phone: ${customer.phone}</p>
               ${customer.address ? `<p class="text-xs text-gray-500">Address: ${customer.address}</p>` : ''}
-              ${assignment ? `<p class="text-xs text-gray-500 mt-1">📶 ODP: ${assignment.odp.name} - Port ${assignment.portNumber}</p>` : ''}
+              ${assignment ? `<p class="text-xs text-gray-500 mt-1">📶 ODP: ${assignment.odp?.name || '-'} - Port ${assignment.portNumber}</p>` : ''}
               <p class="text-xs mt-1">
-                <span class="font-semibold">Account:</span> 
-                <span class="${isActive ? 'text-green-600' : 'text-red-600'}">
-                  ${isActive ? 'Active' : 'Inactive'}
-                </span>
+                <span class="font-semibold">Account:</span>
+                <span class="${isActive ? 'text-green-600' : 'text-red-600'}">${isActive ? 'Active' : 'Inactive'}</span>
               </p>
             </div>`);
           markersRef.current?.addLayer(marker);
@@ -305,9 +442,9 @@ export default function NetworkMapComponent({
       });
     }
 
-    // ----- Custom APs (new layer) -----
+    /* ----- Custom APs ----- */
     if (visibleLayers.customAps && networkData.customAps) {
-      networkData.customAps.forEach((ap: any) => {
+      networkData.customAps.forEach((ap) => {
         const isOnline = ap.status === 'online';
         const iconHtml = `
           <div style="position:relative;width:32px;height:32px;">
@@ -318,7 +455,12 @@ export default function NetworkMapComponent({
             </svg>
           </div>`;
         const marker = L.marker([ap.latitude, ap.longitude], {
-          icon: L.divIcon({ className: 'custom-ap-marker', html: iconHtml, iconSize: [32, 32], iconAnchor: [16, 16] }),
+          icon: L.divIcon({
+            className: 'custom-ap-marker',
+            html: iconHtml,
+            iconSize: [32, 32],
+            iconAnchor: [16, 16],
+          }),
         });
         marker.bindPopup(`
           <div class="p-2">
@@ -331,31 +473,59 @@ export default function NetworkMapComponent({
       });
     }
 
-    // ----- Customer‑ODP lines (fixed null check) -----
-    if (visibleLayers.cables && visibleLayers.customers && networkData.customerAssignments) {
-      networkData.customerAssignments.forEach((assignment: any) => {
-        const customer = networkData.customers.find((c: any) => c.id === assignment.customerId);
-        const odp = networkData.odps.find((o: any) => o.id === assignment.odpId);
+    /* ----- Cables (customer → ODP lines) ----- */
+    if (
+      visibleLayers.cables &&
+      visibleLayers.customers &&
+      networkData.customerAssignments
+    ) {
+      networkData.customerAssignments.forEach((assignment) => {
+        const customer = networkData.customers.find(
+          (c) => c.id === assignment.customerId
+        );
+        const odp = networkData.odps.find((o) => o.id === assignment.odpId);
 
-        if (customer && odp && customer.latitude != null && customer.longitude != null) {
-          const isOnline = customer.isOnline;
+        if (
+          customer &&
+          odp &&
+          customer.latitude != null &&
+          customer.longitude != null
+        ) {
+          const isOnline = !!customer.isOnline;
           const lineColor = isOnline ? '#10B981' : '#EF4444';
 
           const borderLine = L.polyline(
-            [[odp.latitude, odp.longitude], [customer.latitude, customer.longitude]],
-            { color: '#FFFFFF', weight: 4, opacity: 0.9, dashArray: '10,10', className: 'animated-path' }
+            [
+              [odp.latitude, odp.longitude],
+              [customer.latitude, customer.longitude],
+            ],
+            {
+              color: '#FFFFFF',
+              weight: 4,
+              opacity: 0.9,
+              dashArray: '10,10',
+              className: 'animated-path',
+            }
           );
           const polyline = L.polyline(
-            [[odp.latitude, odp.longitude], [customer.latitude, customer.longitude]],
-            { color: lineColor, weight: 2, opacity: 0.8, dashArray: '10,10', className: 'animated-path' }
+            [
+              [odp.latitude, odp.longitude],
+              [customer.latitude, customer.longitude],
+            ],
+            {
+              color: lineColor,
+              weight: 2,
+              opacity: 0.8,
+              dashArray: '10,10',
+              className: 'animated-path',
+            }
           );
           polyline.bindPopup(`
             <div class="text-sm">
               <strong>${customer.name}</strong> → <strong>${odp.name}</strong><br/>
               Port: ${assignment.portNumber}<br/>
               ${assignment.distance ? `Distance: ${assignment.distance.toFixed(2)} km<br/>` : ''}
-              Status: <span class="${isOnline ? 'text-green-600' : 'text-red-600'}">
-                ${isOnline ? '🟢 Online' : '🔴 Offline'}</span>
+              Status: <span class="${isOnline ? 'text-green-600' : 'text-red-600'}">${isOnline ? '🟢 Online' : '🔴 Offline'}</span>
             </div>`);
           markersRef.current?.addLayer(borderLine);
           markersRef.current?.addLayer(polyline);
@@ -363,188 +533,171 @@ export default function NetworkMapComponent({
       });
     }
 
-    // ----- Duplicate OLT markers (circleMarker) as in the original -----
-    if (visibleLayers.olts) {
-      networkData.olts.forEach((olt: any) => {
-        const marker = L.circleMarker([olt.latitude, olt.longitude], {
-          radius: 8, fillColor: '#A855F7', color: '#7C3AED', weight: 2, opacity: 1, fillOpacity: 0.8,
-        });
-        const routerNames = olt.routers?.map((r: any) => r.router?.name).filter(Boolean).join(', ') || '-';
-        marker.bindPopup(`
-          <div class="p-2">
-            <h3 class="font-bold text-purple-600">📡 OLT</h3>
-            <p class="text-sm"><strong>${olt.name}</strong></p>
-            <p class="text-xs text-gray-600">${olt.ipAddress}</p>
-            <p class="text-xs text-gray-500">Routers: ${routerNames}</p>
-            <p class="text-xs text-gray-500">ODPs: ${olt._count?.odps || 0}</p>
-            <p class="text-xs mt-1">
-              <span class="font-semibold">Routing:</span> 
-              <span class="${olt.followRoad ? 'text-green-600' : 'text-gray-600'}">
-                ${olt.followRoad ? '🛣️ Follow Road' : '➡️ Straight Line'}</span>
-            </p>
-          </div>`);
-        markersRef.current?.addLayer(marker);
-      });
-    }
-
-    // ----- Cables: OLT‑Server, OLT‑ODC, etc. (wrapped in async function) -----
+    /* ----- OLT-Server, OLT-ODC, ODC/ODP-ODP connections ----- */
     if (visibleLayers.cables) {
       (async () => {
-        // Helper functions
-        const drawStraightLine = (server: any, olt: any, routerName: string) => {
+        const drawStraightLine = (
+          source: { latitude: number; longitude: number; name: string },
+          target: { latitude: number; longitude: number; name: string },
+          color: string,
+          label: string
+        ) => {
           const polyline = L.polyline(
-            [[server.latitude, server.longitude], [olt.latitude, olt.longitude]],
-            { color: '#A855F7', weight: 2, opacity: 0.6, dashArray: '10,10', className: 'animated-path' }
+            [
+              [source.latitude, source.longitude],
+              [target.latitude, target.longitude],
+            ],
+            {
+              color,
+              weight: 2,
+              opacity: 0.6,
+              dashArray: '10,10',
+              className: 'animated-path',
+            }
           );
           polyline.bindPopup(`
             <div class="text-sm">
-              <strong>${server.name}</strong> → <strong>${routerName}</strong> → <strong>${olt.name}</strong><br/>
-              ➡️ Straight line
+              <strong>${source.name}</strong> → <strong>${target.name}</strong><br/>
+              ${label} ➡️ Straight line
             </div>`);
           markersRef.current?.addLayer(polyline);
         };
 
-        const drawOdcConnection = async (olt: any, odc: any, ponColor: string) => {
-          if (odc.followRoad) {
-            try {
-              const url = `https://osrm.gnetid.xyz/route/v1/driving/${olt.longitude},${olt.latitude};${odc.longitude},${odc.latitude}?overview=full&geometries=geojson`;
-              const res = await fetch(url, { headers: { Accept: 'application/json' } });
-              if (res.ok) {
-                const data = await res.json();
-                if (data.code === 'Ok' && data.routes?.[0]) {
-                  const coords = data.routes[0].geometry.coordinates.map(([lng, lat]: number[]) => [lat, lng]);
-                  const polyline = L.polyline(coords, { color: ponColor, weight: 2.5, opacity: 0.7, dashArray: '10,10', className: 'animated-path' });
-                  polyline.bindPopup(`
-                    <div class="text-sm">
-                      <strong>${olt.name}</strong> → <strong>${odc.name}</strong><br/>
-                      PON Port: ${odc.ponPort}<br/>
-                      Distance: ${(data.routes[0].distance / 1000).toFixed(2)} km<br/>
-                      🛣️ Following road
-                    </div>`);
-                  markersRef.current?.addLayer(polyline);
-                  return;
-                }
-              }
-            } catch {}
+        const drawRoadConnection = async (
+          source: { latitude: number; longitude: number; name: string },
+          target: { latitude: number; longitude: number; name: string },
+          color: string,
+          label: string
+        ): Promise<boolean> => {
+          try {
+            const url = `https://osrm.gnetid.xyz/route/v1/driving/${source.longitude},${source.latitude};${target.longitude},${target.latitude}?overview=full&geometries=geojson`;
+            const res = await fetch(url, {
+              headers: { Accept: 'application/json' },
+            });
+            if (!res.ok) return false;
+            const data = await res.json();
+            if (data.code !== 'Ok' || !data.routes?.[0]) return false;
+            const coords = data.routes[0].geometry.coordinates.map(
+              ([lng, lat]: [number, number]) => [lat, lng]
+            );
+            const polyline = L.polyline(coords, {
+              color,
+              weight: 2.5,
+              opacity: 0.7,
+              dashArray: '10,10',
+              className: 'animated-path',
+            });
+            polyline.bindPopup(`
+              <div class="text-sm">
+                <strong>${source.name}</strong> → <strong>${target.name}</strong><br/>
+                ${label}<br/>
+                Distance: ${(data.routes[0].distance / 1000).toFixed(2)} km<br/>
+                🛣️ Following road
+              </div>`);
+            markersRef.current?.addLayer(polyline);
+            return true;
+          } catch {
+            return false;
           }
-          // Fallback straight line
-          const polyline = L.polyline(
-            [[olt.latitude, olt.longitude], [odc.latitude, odc.longitude]],
-            { color: ponColor, weight: 2.5, opacity: 0.6, dashArray: '10,10', className: 'animated-path' }
-          );
-          polyline.bindPopup(`
-            <div class="text-sm">
-              <strong>${olt.name}</strong> → <strong>${odc.name}</strong><br/>
-              PON Port: ${odc.ponPort}<br/>
-              ➡️ Straight line
-            </div>`);
-          markersRef.current?.addLayer(polyline);
         };
 
-        const drawOdpConnection = async (source: any, odp: any, ponColor: string) => {
-          if (odp.followRoad) {
-            try {
-              const url = `https://osrm.gnetid.xyz/route/v1/driving/${source.longitude},${source.latitude};${odp.longitude},${odp.latitude}?overview=full&geometries=geojson`;
-              const res = await fetch(url, { headers: { Accept: 'application/json' } });
-              if (res.ok) {
-                const data = await res.json();
-                if (data.code === 'Ok' && data.routes?.[0]) {
-                  const coords = data.routes[0].geometry.coordinates.map(([lng, lat]: number[]) => [lat, lng]);
-                  const polyline = L.polyline(coords, { color: ponColor, weight: 2, opacity: 0.6, dashArray: '10,10', className: 'animated-path' });
-                  polyline.bindPopup(`
-                    <div class="text-sm">
-                      <strong>${source.name}</strong> → <strong>${odp.name}</strong><br/>
-                      PON Port: ${odp.ponPort}<br/>
-                      Distance: ${(data.routes[0].distance / 1000).toFixed(2)} km<br/>
-                      🛣️ Following road
-                    </div>`);
-                  markersRef.current?.addLayer(polyline);
-                  return;
-                }
-              }
-            } catch {}
-          }
-          // Fallback
-          const polyline = L.polyline(
-            [[source.latitude, source.longitude], [odp.latitude, odp.longitude]],
-            { color: ponColor, weight: 2, opacity: 0.6 }
-          );
-          polyline.bindPopup(`
-            <div class="text-sm">
-              <strong>${source.name}</strong> → <strong>${odp.name}</strong><br/>
-              PON Port: ${odp.ponPort}<br/>
-              ➡️ Straight line
-            </div>`);
-          markersRef.current?.addLayer(polyline);
-        };
-
-        // 1. OLT‑Server connections
+        /* OLT-Server */
         for (const olt of networkData.olts) {
           const oltRouters = olt.routers || [];
           for (const oltRouter of oltRouters) {
             const router = oltRouter.router;
             if (!router) continue;
-            const server = networkData.servers.find((s: any) => s.routerId === router.id);
+            const server = networkData.servers.find(
+              (s) => s.routerId === router.id
+            );
             if (!server) continue;
+
             if (olt.followRoad) {
-              try {
-                const url = `https://osrm.gnetid.xyz/route/v1/driving/${server.longitude},${server.latitude};${olt.longitude},${olt.latitude}?overview=full&geometries=geojson`;
-                const res = await fetch(url, { headers: { Accept: 'application/json' } });
-                if (res.ok) {
-                  const data = await res.json();
-                  if (data.code === 'Ok' && data.routes?.[0]) {
-                    const coords = data.routes[0].geometry.coordinates.map(([lng, lat]: number[]) => [lat, lng]);
-                    const polyline = L.polyline(coords, { color: '#A855F7', weight: 3, opacity: 0.7, dashArray: '10,10', className: 'animated-path' });
-                    polyline.bindPopup(`
-                      <div class="text-sm">
-                        <strong>${server.name}</strong> → <strong>${olt.name}</strong><br/>
-                        Distance: ${(data.routes[0].distance / 1000).toFixed(2)} km<br/>
-                        🛣️ Following road
-                      </div>`);
-                    markersRef.current?.addLayer(polyline);
-                    continue;
-                  }
-                }
-              } catch {}
+              const ok = await drawRoadConnection(
+                server,
+                olt,
+                '#A855F7',
+                `Router: ${router.name}`
+              );
+              if (ok) continue;
             }
-            drawStraightLine(server, olt, router.name);
+            drawStraightLine(
+              server,
+              olt,
+              '#A855F7',
+              `<strong>${router.name}</strong><br/>`
+            );
           }
         }
 
-        // 2. OLT‑ODC connections
+        /* OLT-ODC */
         for (const odc of networkData.odcs) {
-          const olt = networkData.olts.find((o: any) => o.id === odc.oltId);
+          const olt = networkData.olts.find((o) => o.id === odc.oltId);
           if (!olt) continue;
-          const ponColor = ponColors.find((p) => p.port === odc.ponPort)?.color || '#EAB308';
-          await drawOdcConnection(olt, odc, ponColor);
+          const ponColor =
+            ponColors.find((p) => p.port === odc.ponPort)?.color || '#EAB308';
+
+          if (odc.followRoad) {
+            const ok = await drawRoadConnection(
+              olt,
+              odc,
+              ponColor,
+              `PON Port: ${odc.ponPort}`
+            );
+            if (ok) continue;
+          }
+          drawStraightLine(olt, odc, ponColor, `PON Port: ${odc.ponPort}`);
         }
 
-        // 3. ODC/ODP‑ODP connections
+        /* ODC/ODP-ODP */
         for (const odp of networkData.odps) {
-          const ponColor = ponColors.find((p) => p.port === odp.ponPort)?.color || '#10B981';
+          const ponColor =
+            ponColors.find((p) => p.port === odp.ponPort)?.color || '#10B981';
+
           if (odp.odcId) {
-            const odc = networkData.odcs.find((o: any) => o.id === odp.odcId);
-            if (odc) await drawOdpConnection(odc, odp, ponColor);
+            const odc = networkData.odcs.find((o) => o.id === odp.odcId);
+            if (odc) {
+              if (odp.followRoad) {
+                const ok = await drawRoadConnection(
+                  odc,
+                  odp,
+                  ponColor,
+                  `PON Port: ${odp.ponPort}`
+                );
+                if (ok) continue;
+              }
+              drawStraightLine(odc, odp, ponColor, `PON Port: ${odp.ponPort}`);
+            }
           } else if (odp.parentOdpId) {
-            const parentOdp = networkData.odps.find((o: any) => o.id === odp.parentOdpId);
-            if (parentOdp) await drawOdpConnection(parentOdp, odp, ponColor);
+            const parentOdp = networkData.odps.find(
+              (o) => o.id === odp.parentOdpId
+            );
+            if (parentOdp) {
+              if (odp.followRoad) {
+                const ok = await drawRoadConnection(
+                  parentOdp,
+                  odp,
+                  ponColor,
+                  `PON Port: ${odp.ponPort}`
+                );
+                if (ok) continue;
+              }
+              drawStraightLine(
+                parentOdp,
+                odp,
+                ponColor,
+                `PON Port: ${odp.ponPort}`
+              );
+            }
           }
         }
       })();
     }
-
-    // Cleanup on unmount
-    return () => {
-      if (mapRef.current) {
-        mapRef.current.remove();
-        mapRef.current = null;
-      }
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [networkData, visibleLayers, ponColors]);
 
-  // ----- Tile layer switch -----
-  const handleLayerChange = (layerKey: keyof typeof MAP_LAYERS) => {
+  /* ---------------- Layer switcher ---------------- */
+  const handleLayerChange = (layerKey: LayerKey) => {
     if (mapRef.current && tileLayerRef.current) {
       mapRef.current.removeLayer(tileLayerRef.current);
       const layer = MAP_LAYERS[layerKey];
@@ -556,7 +709,7 @@ export default function NetworkMapComponent({
     }
   };
 
-  // ----- Fullscreen toggle -----
+  /* ---------------- Fullscreen ---------------- */
   const toggleFullscreen = () => {
     if (!containerRef.current) return;
     if (!isFullscreen) {
@@ -570,26 +723,24 @@ export default function NetworkMapComponent({
     const handleFullscreenChange = () => {
       setIsFullscreen(!!document.fullscreenElement);
       setTimeout(() => {
-        if (mapRef.current) {
-          mapRef.current.invalidateSize();
-        }
+        mapRef.current?.invalidateSize();
       }, 100);
     };
     document.addEventListener('fullscreenchange', handleFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    return () =>
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, []);
 
   return (
     <div ref={containerRef} className="relative w-full h-full bg-gray-900">
       <div ref={mapContainerRef} className="w-full h-full" />
 
-      {/* Layer Selector */}
       <div className="absolute top-4 right-4 z-[1000] flex flex-col gap-1">
-        {Object.entries(MAP_LAYERS).map(([key, layer]) => (
+        {(Object.keys(MAP_LAYERS) as LayerKey[]).map((key) => (
           <button
             key={key}
-            onClick={() => handleLayerChange(key as keyof typeof MAP_LAYERS)}
-            title={layer.name}
+            onClick={() => handleLayerChange(key)}
+            title={MAP_LAYERS[key].name}
             className={`w-9 h-9 rounded shadow-lg transition-all ${
               currentLayer === key
                 ? 'bg-blue-500 text-white ring-2 ring-blue-300'
@@ -606,13 +757,12 @@ export default function NetworkMapComponent({
         ))}
       </div>
 
-      {/* Fullscreen Button */}
       <button
         onClick={toggleFullscreen}
         title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
         className="absolute bottom-4 right-4 z-[1000] w-10 h-10 bg-white dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700 rounded shadow-lg transition-all flex items-center justify-center"
       >
-        <span className="text-lg">{isFullscreen ? '❌' : '⛶️'}</span>
+        <span className="text-lg">{isFullscreen ? '❌' : '⛶'}</span>
       </button>
     </div>
   );
