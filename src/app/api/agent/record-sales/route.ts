@@ -1,25 +1,33 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import { prisma } from '@/lib/prisma';
+import crypto from 'crypto';
 
 /**
  * POST /api/agent/record-sales
- * Record agent sales for vouchers that became ACTIVE
+ * Record agent sales for vouchers that became ACTIVE or EXPIRED
  * Should be called by cron job or after voucher activation
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export async function POST(request: NextRequest) {
   try {
-    // Get all ACTIVE vouchers that have agent batch codes (contains hyphen pattern)
-    const activeVouchers = await prisma.hotspotVoucher.findMany({
+    // 1. Fetch all agents to create a case-insensitive mapping of Name -> ID
+    const allAgents = await prisma.agent.findMany();
+    const agentMap = new Map<string, string>();
+    
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    allAgents.forEach((a: any) => {
+      // Normalize the name: uppercase and remove special characters
+      const normalizedName = a.name.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      agentMap.set(normalizedName, a.id);
+    });
+
+    // 2. Fetch all vouchers that have been used (firstLoginAt is not null)
+    // This includes both ACTIVE and EXPIRED vouchers, preventing missed sales
+    const soldVouchers = await prisma.hotspotVoucher.findMany({
       where: {
-        status: 'ACTIVE',
-        batchCode: {
-          not: null,
-        },
-        firstLoginAt: {
-          not: null,
-        },
+        batchCode: { not: null },
+        firstLoginAt: { not: null },
+        status: { in: ['ACTIVE', 'EXPIRED'] }, // CRITICAL FIX: Include EXPIRED
       },
       include: {
         profile: true,
@@ -29,9 +37,21 @@ export async function POST(request: NextRequest) {
     let recordedCount = 0;
     const errors = [];
 
-    for (const voucher of activeVouchers) {
-      // Skip if batch code doesn't look like agent format (no hyphen)
-      if (!voucher.batchCode?.includes('-')) {
+    for (const voucher of soldVouchers) {
+      if (!voucher.batchCode) continue;
+
+      // Extract agent name pattern from batch code (e.g., "ASLAM-123456" -> "ASLAM")
+      const rawAgentName = voucher.batchCode.split('-')[0];
+      const normalizedBatchName = rawAgentName.toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+      // Find agent ID using the map (fixes case-sensitivity issue)
+      const agentId = agentMap.get(normalizedBatchName);
+
+      if (!agentId) {
+        errors.push({
+          voucher: voucher.code,
+          error: `Agent not found for batch: ${voucher.batchCode}`,
+        });
         continue;
       }
 
@@ -46,32 +66,12 @@ export async function POST(request: NextRequest) {
         continue; // Already recorded
       }
 
-      // Extract agent name from batch code (format: AGENTNAME-TIMESTAMP)
-      const agentNamePattern = voucher.batchCode.split('-')[0];
-
-      // Find agent by matching name pattern (case-insensitive for MySQL)
-      const agent = await prisma.agent.findFirst({
-        where: {
-          name: {
-            equals: agentNamePattern,
-          },
-        },
-      });
-
-      if (!agent) {
-        errors.push({
-          voucher: voucher.code,
-          error: `Agent not found for batch: ${voucher.batchCode}`,
-        });
-        continue;
-      }
-
       try {
         // Record sale with resellerFee as agent profit
         await prisma.agentSale.create({
           data: {
             id: crypto.randomUUID(),
-            agentId: agent.id,
+            agentId: agentId,
             voucherCode: voucher.code,
             profileName: voucher.profile.name,
             amount: voucher.profile.resellerFee, // Agent earns resellerFee
@@ -80,10 +80,12 @@ export async function POST(request: NextRequest) {
         });
 
         recordedCount++;
-      } catch (error: any) {
+      } catch (error: unknown) {
+        // FIX: Handle unknown error type instead of 'any'
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         errors.push({
           voucher: voucher.code,
-          error: error.message,
+          error: errorMessage,
         });
       }
     }

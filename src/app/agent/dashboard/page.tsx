@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   TrendingUp,
@@ -11,6 +11,10 @@ import {
   Check,
   X as CloseIcon,
   MessageCircle,
+  Wallet,
+  ChevronDown,
+  ChevronUp,
+  Loader2,
 } from 'lucide-react';
 import { showSuccess, showError, showConfirm } from '@/lib/sweetalert';
 import { formatNairobi } from '@/lib/timezone';
@@ -39,6 +43,8 @@ interface Voucher {
   batchCode: string;
   status: string;
   profileName: string;
+  costPrice: number;
+  resellerFee: number;
   firstLoginAt: string | null;
   expiresAt: string | null;
   createdAt: string;
@@ -74,9 +80,19 @@ export default function AgentDashboardPage() {
   const [whatsappPhone, setWhatsappPhone] = useState('');
   const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
 
+  // Deposit functionality
+  const [isDepositOpen, setIsDepositOpen] = useState(false);
+  const [depositAmount, setDepositAmount] = useState<number>(0);
+  const [depositPhone, setDepositPhone] = useState<string>('');
+  const [isDepositing, setIsDepositing] = useState(false);
+  const [paymentStatus, setPaymentStatus] = useState<string | null>(null);
+  const pollingRef = useRef<NodeJS.Timeout | null>(null);
+
   const loadDashboard = useCallback(async (agentId: string) => {
     try {
-      const res = await fetch(`/api/agent/dashboard?agentId=${agentId}`);
+      const res = await fetch(`/api/agent/dashboard?agentId=${agentId}`, {
+        cache: 'no-store',
+      });
       const data = await res.json();
 
       if (res.ok) {
@@ -103,17 +119,115 @@ export default function AgentDashboardPage() {
 
     try {
       const agentData = JSON.parse(agentDataStr) as AgentData;
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setAgent(agentData);
+      setDepositPhone(agentData.phone || '');
       loadDashboard(agentData.id);
     } catch (e) {
       console.error('Error parsing agent data:', e);
       router.push('/agent');
     }
+
+    // Cleanup polling on unmount
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+    };
   }, [router, loadDashboard]);
 
   const handleLogout = () => {
     localStorage.removeItem('agentData');
     router.push('/agent');
+  };
+
+  // --- Deposit Calculation Logic ---
+  const totalCostOwed = vouchers.reduce((sum, voucher) => {
+    if (voucher.status === 'ACTIVE' || voucher.status === 'EXPIRED') {
+      return sum + (voucher.costPrice || 0);
+    }
+    return sum;
+  }, 0);
+
+  // Update deposit amount when totalCostOwed changes and the input is not manually touched
+  useEffect(() => {
+    if (totalCostOwed > 0 && depositAmount === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setDepositAmount(totalCostOwed);
+    }
+  }, [totalCostOwed, depositAmount]);
+
+  const handleDeposit = async () => {
+    if (!agent || !depositAmount || !depositPhone) {
+      await showError('Please enter a valid amount and phone number');
+      return;
+    }
+    if (depositAmount < 100) {
+      await showError('Minimum deposit is TZS 100');
+      return;
+    }
+
+    setIsDepositing(true);
+    setPaymentStatus('INITIATING');
+
+    try {
+      const res = await fetch('/api/agent/deposit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agentId: agent.id,
+          amount: depositAmount,
+          phone: depositPhone,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (data.success) {
+        setPaymentStatus('PENDING');
+        await showSuccess(data.message || 'STK push sent. Please enter your PIN.');
+        startPolling(data.orderNumber);
+      } else {
+        await showError(data.error || 'Deposit failed');
+        setIsDepositing(false);
+        setPaymentStatus(null);
+      }
+    } catch (error) {
+      console.error('Deposit error:', error);
+      await showError('Failed to initiate deposit');
+      setIsDepositing(false);
+      setPaymentStatus(null);
+    }
+  };
+
+  const startPolling = (orderNum: string) => {
+    if (pollingRef.current) clearInterval(pollingRef.current);
+
+    pollingRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/agent/payment-status?orderNumber=${orderNum}`);
+        const data = await res.json();
+
+        if (data.success && data.payment) {
+          const status = data.payment.status;
+          setPaymentStatus(status);
+
+          if (status === 'PAID' || status === 'SUCCESS') {
+            if (pollingRef.current) clearInterval(pollingRef.current);
+            await showSuccess('Deposit successful! Your balance has been updated.');
+            setIsDepositing(false);
+            setPaymentStatus(null);
+            setIsDepositOpen(false);
+            if (agent) loadDashboard(agent.id);
+          } else if (status === 'FAILED') {
+            if (pollingRef.current) clearInterval(pollingRef.current);
+            await showError('Deposit failed. Please try again.');
+            setIsDepositing(false);
+            setPaymentStatus(null);
+          }
+        }
+      } catch (error) {
+        console.error('Polling error:', error);
+      }
+    }, 5000);
   };
 
   const handleSelectVoucher = (voucherId: string) => {
@@ -423,6 +537,130 @@ export default function AgentDashboardPage() {
               </>
             )}
           </button>
+        </div>
+
+        {/* DEPOSIT DROPDOWN CARD */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden">
+          <button
+            onClick={() => setIsDepositOpen(!isDepositOpen)}
+            className="w-full px-6 py-4 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700/50 transition"
+          >
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-indigo-100 dark:bg-indigo-900/30 rounded-full">
+                <Wallet className="h-5 w-5 text-indigo-600 dark:text-indigo-400" />
+              </div>
+              <div className="text-left">
+                <h2 className="text-lg font-semibold">Agent Deposit</h2>
+                <p className="text-sm text-gray-500">
+                  {totalCostOwed > 0
+                    ? `You owe ${formatCurrency(totalCostOwed)} for sold vouchers`
+                    : 'All active vouchers are paid. You can top up your wallet.'}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-4">
+              {totalCostOwed > 0 && (
+                <span className="px-3 py-1 bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400 rounded-full text-sm font-medium">
+                  Due: {formatCurrency(totalCostOwed)}
+                </span>
+              )}
+              {isDepositOpen ? (
+                <ChevronUp className="h-5 w-5 text-gray-400" />
+              ) : (
+                <ChevronDown className="h-5 w-5 text-gray-400" />
+              )}
+            </div>
+          </button>
+
+          {isDepositOpen && (
+            <div className="px-6 pb-6 pt-2 border-t dark:border-gray-700">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4">
+                <div className="space-y-4">
+                  <div className="p-4 bg-gray-50 dark:bg-gray-900/50 rounded-lg">
+                    <h3 className="text-sm font-medium text-gray-500 mb-2">Payment Breakdown</h3>
+                    <div className="space-y-2 text-sm">
+                      <div className="flex justify-between">
+                        <span className="text-gray-600 dark:text-gray-400">Total Cost of Used Vouchers:</span>
+                        <span className="font-medium">{formatCurrency(totalCostOwed)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600 dark:text-gray-400">Your Profit (Kept):</span>
+                        <span className="font-medium text-green-600">
+                          {formatCurrency(
+                            vouchers
+                              .filter((v) => v.status === 'ACTIVE' || v.status === 'EXPIRED')
+                              .reduce((sum, v) => sum + (v.resellerFee || 0), 0)
+                          )}
+                        </span>
+                      </div>
+                      <div className="border-t dark:border-gray-700 pt-2 flex justify-between font-semibold">
+                        <span>Amount to Pay:</span>
+                        <span className="text-red-600">{formatCurrency(totalCostOwed)}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Phone Number (for Mobile Money)</label>
+                    <input
+                      type="tel"
+                      placeholder="07123XXXXX"
+                      value={depositPhone}
+                      onChange={(e) => setDepositPhone(e.target.value)}
+                      className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg dark:bg-gray-700"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium mb-2">Deposit Amount (TZS)</label>
+                    <input
+                      type="number"
+                      min="100"
+                      value={depositAmount || ''}
+                      onChange={(e) => setDepositAmount(parseInt(e.target.value, 10) || 0)}
+                      className="w-full px-3 py-2 border dark:border-gray-600 rounded-lg dark:bg-gray-700"
+                    />
+                  </div>
+
+                  <button
+                    onClick={handleDeposit}
+                    disabled={isDepositing || depositAmount < 100 || !depositPhone}
+                    className="w-full flex items-center justify-center px-4 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isDepositing ? (
+                      <>
+                        <Loader2 className="animate-spin h-5 w-5 mr-2" />
+                        {paymentStatus === 'PENDING' ? 'Waiting for PIN...' : 'Processing...'}
+                      </>
+                    ) : (
+                      <>
+                        <Wallet className="h-5 w-5 mr-2" />
+                        Deposit Now
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                <div className="flex flex-col items-center justify-center p-6 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-dashed border-gray-300 dark:border-gray-700">
+                  <Wallet className="h-12 w-12 text-gray-400 mb-4" />
+                  <h3 className="text-lg font-medium mb-2">How it works</h3>
+                  <ul className="text-sm text-gray-500 space-y-2 text-center">
+                    <li>1. Enter your mobile money number.</li>
+                    <li>2. The amount is pre-filled based on your active vouchers.</li>
+                    <li>3. Click Deposit Now to receive an STK push.</li>
+                    <li>4. Enter your PIN on your phone to complete.</li>
+                    <li>5. Your balance will be updated automatically.</li>
+                  </ul>
+                  {paymentStatus === 'PENDING' && (
+                    <div className="mt-4 p-3 bg-yellow-50 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400 rounded-lg text-sm flex items-center gap-2">
+                      <Loader2 className="animate-spin h-4 w-4" />
+                      Waiting for payment confirmation...
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Vouchers List */}
